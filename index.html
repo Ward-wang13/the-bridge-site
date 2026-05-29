@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>The Bridge — Salesforce × 企业微信 自动化桥梁</title>
+  <meta name="description" content="The Bridge 是一款本地部署的自动化工具，自动抓取 Salesforce 网页数据并推送到企业微信。仅支持 macOS。" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Sora:wght@600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- 背景动效层 -->
+  <div class="bg-layer">
+    <div class="orb orb-1"></div>
+    <div class="orb orb-2"></div>
+    <div class="orb orb-3"></div>
+    <div class="grid-overlay"></div>
+    <div class="noise"></div>
+  </div>
+  <div class="cursor-glow" id="cursorGlow"></div>
+
+  <!-- 导航栏 -->
+  <header class="nav" id="nav">
+    <div class="nav-inner">
+      <a href="#top" class="brand">
+        <span class="brand-mark">⌁</span>
+        <span class="brand-name">The Bridge</span>
+      </a>
+      <nav class="nav-links">
+        <a href="#features">功能</a>
+        <a href="#how">原理</a>
+        <a href="#guide">教程</a>
+        <a href="#download">下载</a>
+      </nav>
+      <a href="#download" class="btn btn-sm">
+        <span>下载 for Mac</span>
+      </a>
+    </div>
+  </header>
+
+  <main id="top">
+    <!-- Hero -->
+    <section class="hero">
+      <div class="hero-content reveal">
+        <div class="badge">
+          <span class="dot"></span> macOS · Local-first · Automation
+        </div>
+        <h1 class="hero-title">
+          连接 <span class="grad-text">Salesforce</span><br />
+          与 <span class="grad-text grad-2">企业微信</span> 的自动化桥梁
+        </h1>
+        <p class="hero-sub">
+          The Bridge 在你的 Mac 本地运行，自动抓取 Salesforce 网页数据，<br class="hide-mobile" />
+          实时整理并推送到企业微信。无需服务器，数据不出本机。
+        </p>
+        <div class="hero-cta">
+          <a href="#download" class="btn btn-lg">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true"><path d="M16.365 1.43c0 1.14-.467 2.23-1.22 3.02-.81.86-2.13 1.52-3.23 1.43-.13-1.1.42-2.27 1.16-3.05.81-.86 2.24-1.5 3.29-1.4zM20.5 17.2c-.6 1.38-.88 1.99-1.65 3.21-1.07 1.7-2.58 3.81-4.45 3.83-1.66.02-2.09-1.08-4.35-1.07-2.26.01-2.73 1.09-4.39 1.07-1.87-.02-3.3-1.93-4.37-3.62-3-4.74-3.31-10.3-1.46-13.25 1.31-2.1 3.39-3.33 5.34-3.33 1.99 0 3.24 1.09 4.88 1.09 1.6 0 2.57-1.09 4.88-1.09 1.74 0 3.58.95 4.89 2.58-4.3 2.36-3.6 8.49.13 10.85z"/></svg>
+            <span>下载 The Bridge</span>
+          </a>
+          <a href="#how" class="btn btn-ghost">看看怎么运作 →</a>
+        </div>
+        <p class="hero-note">免费 · 适用于 macOS 12+ · Apple Silicon &amp; Intel</p>
+      </div>
+
+      <!-- Hero 演示视觉：流程动画 -->
+      <div class="hero-visual reveal">
+        <div class="flow-card glass">
+          <div class="flow-node node-sf">
+            <div class="node-icon">☁︎</div>
+            <div class="node-label">Salesforce</div>
+            <div class="node-meta">网页数据抓取</div>
+          </div>
+          <div class="flow-pipe">
+            <span class="packet"></span>
+            <span class="packet"></span>
+            <span class="packet"></span>
+          </div>
+          <div class="flow-node node-bridge">
+            <div class="node-icon">⌁</div>
+            <div class="node-label">The Bridge</div>
+            <div class="node-meta">本地处理</div>
+          </div>
+          <div class="flow-pipe">
+            <span class="packet"></span>
+            <span class="packet"></span>
+            <span class="packet"></span>
+          </div>
+          <div class="flow-node node-wecom">
+            <div class="node-icon">✉︎</div>
+            <div class="node-label">企业微信</div>
+            <div class="node-meta">消息推送</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 信任条 -->
+    <section class="strip reveal">
+      <div class="strip-item"><strong>0</strong><span>服务器依赖</span></div>
+      <div class="divider"></div>
+      <div class="strip-item"><strong>100%</strong><span>本地运行</span></div>
+      <div class="divider"></div>
+      <div class="strip-item"><strong>24/7</strong><span>自动化执行</span></div>
+      <div class="divider"></div>
+      <div class="strip-item"><strong>macOS</strong><span>原生支持</span></div>
+    </section>
+
+    <!-- 功能 -->
+    <section class="section" id="features">
+      <div class="section-head reveal">
+        <span class="eyebrow">FEATURES</span>
+        <h2>把重复劳动交给 The Bridge</h2>
+        <p>从数据采集到消息触达，全流程自动化，你只需设定一次。</p>
+      </div>
+      <div class="cards">
+        <article class="card glass reveal">
+          <div class="card-icon">☁︎</div>
+          <h3>Salesforce 数据抓取</h3>
+          <p>模拟真实浏览，自动登录并抓取 Salesforce 网页中的列表、报表与字段数据，灵活适配你的视图。</p>
+        </article>
+        <article class="card glass reveal">
+          <div class="card-icon">✉︎</div>
+          <h3>企业微信推送</h3>
+          <p>抓取结果自动整理成结构化消息，按规则推送到指定的企业微信群或成员，关键信息第一时间触达。</p>
+        </article>
+        <article class="card glass reveal">
+          <div class="card-icon">⏱︎</div>
+          <h3>定时 &amp; 触发执行</h3>
+          <p>支持定时任务与条件触发，无人值守持续运行，让数据同步与通知按你的节奏自动完成。</p>
+        </article>
+        <article class="card glass reveal">
+          <div class="card-icon">🔒</div>
+          <h3>本地优先 · 隐私安全</h3>
+          <p>所有数据处理都在你的 Mac 本机完成，不经过第三方服务器，企业敏感数据牢牢掌握在自己手里。</p>
+        </article>
+        <article class="card glass reveal">
+          <div class="card-icon">⚙︎</div>
+          <h3>可视化配置</h3>
+          <p>图形界面配置抓取规则与推送目标，无需编写代码，非技术同事也能快速上手。</p>
+        </article>
+        <article class="card glass reveal">
+          <div class="card-icon">📊</div>
+          <h3>运行日志 &amp; 回溯</h3>
+          <p>每次任务都有清晰的执行记录与状态反馈，出错可追溯，运行情况一目了然。</p>
+        </article>
+      </div>
+    </section>
+
+    <!-- 原理 / How it works -->
+    <section class="section" id="how">
+      <div class="section-head reveal">
+        <span class="eyebrow">HOW IT WORKS</span>
+        <h2>三步，搭好你的数据桥梁</h2>
+        <p>从安装到自动运行，只需几分钟。</p>
+      </div>
+      <div class="steps">
+        <div class="step reveal">
+          <div class="step-num">01</div>
+          <h3>抓取 Capture</h3>
+          <p>The Bridge 在本地打开 Salesforce，按你配置的视图自动提取所需数据。</p>
+        </div>
+        <div class="step-arrow reveal">→</div>
+        <div class="step reveal">
+          <div class="step-num">02</div>
+          <h3>整理 Process</h3>
+          <p>对抓取到的数据进行清洗、筛选与格式化，生成可读的消息内容。</p>
+        </div>
+        <div class="step-arrow reveal">→</div>
+        <div class="step reveal">
+          <div class="step-num">03</div>
+          <h3>推送 Deliver</h3>
+          <p>通过企业微信机器人，将结果按规则发送到对应的群聊或成员。</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 教程 -->
+    <section class="section" id="guide">
+      <div class="guide-wrap glass reveal">
+        <div class="guide-text">
+          <span class="eyebrow">GUIDE</span>
+          <h2>使用教程</h2>
+          <p>第一次使用？跟着图文教程一步步配置抓取规则和企业微信推送，几分钟跑通你的第一个自动化任务。</p>
+          <div class="guide-cta">
+            <a href="#" class="btn btn-lg" id="guideLink">查看完整教程 →</a>
+            <span class="guide-hint">教程链接待替换（可指向 Notion / 文档站）</span>
+          </div>
+        </div>
+        <ol class="guide-list">
+          <li><span>1</span> 下载并安装 The Bridge</li>
+          <li><span>2</span> 登录并授权 Salesforce 访问</li>
+          <li><span>3</span> 配置抓取视图与字段</li>
+          <li><span>4</span> 绑定企业微信机器人</li>
+          <li><span>5</span> 设定执行时间，启动任务</li>
+        </ol>
+      </div>
+    </section>
+
+    <!-- 下载 -->
+    <section class="section download-section" id="download">
+      <div class="download-card glass reveal">
+        <div class="orb orb-dl"></div>
+        <span class="eyebrow">DOWNLOAD</span>
+        <h2>立即开始使用 The Bridge</h2>
+        <p>免费下载，安装即用。让 Salesforce 与企业微信之间的数据流动起来。</p>
+        <div class="download-btns">
+          <a href="#" class="btn btn-lg" id="downloadBtn">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true"><path d="M16.365 1.43c0 1.14-.467 2.23-1.22 3.02-.81.86-2.13 1.52-3.23 1.43-.13-1.1.42-2.27 1.16-3.05.81-.86 2.24-1.5 3.29-1.4zM20.5 17.2c-.6 1.38-.88 1.99-1.65 3.21-1.07 1.7-2.58 3.81-4.45 3.83-1.66.02-2.09-1.08-4.35-1.07-2.26.01-2.73 1.09-4.39 1.07-1.87-.02-3.3-1.93-4.37-3.62-3-4.74-3.31-10.3-1.46-13.25 1.31-2.1 3.39-3.33 5.34-3.33 1.99 0 3.24 1.09 4.88 1.09 1.6 0 2.57-1.09 4.88-1.09 1.74 0 3.58.95 4.89 2.58-4.3 2.36-3.6 8.49.13 10.85z"/></svg>
+            <span>下载 .dmg for macOS</span>
+          </a>
+        </div>
+        <p class="download-note">macOS 12 Monterey 或更高版本 · 支持 Apple Silicon &amp; Intel<br />下载链接待替换（建议托管在 GitHub Releases）</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="footer-inner">
+      <div class="brand">
+        <span class="brand-mark">⌁</span>
+        <span class="brand-name">The Bridge</span>
+      </div>
+      <p>本地部署的 Salesforce × 企业微信 自动化工具</p>
+      <p class="copy">© 2026 The Bridge. Made for macOS.</p>
+    </div>
+  </footer>
+
+  <script src="script.js"></script>
+</body>
+</html>
