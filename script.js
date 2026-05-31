@@ -44,7 +44,7 @@ window.addEventListener("mouseleave", () => (glow.style.opacity = "0"));
    2. GUIDE_URL：你的使用教程页面（Notion / 文档站等）
    ========================================================= */
 const DOWNLOAD_URL = "#"; // 例如: "https://github.com/你/项目/releases/download/v1.0/TheBridge.dmg"
-const GUIDE_URL = "#";    // 例如: "https://你的教程.notion.site"
+const GUIDE_URL = "https://tssoft.atlassian.net/wiki/x/dQDfg";
 
 const dlBtn = document.getElementById("downloadBtn");
 const guideLink = document.getElementById("guideLink");
