@@ -43,7 +43,7 @@ window.addEventListener("mouseleave", () => (glow.style.opacity = "0"));
    1. DOWNLOAD_URL：你的 .dmg 下载直链（建议 GitHub Releases）
    2. GUIDE_URL：你的使用教程页面（Notion / 文档站等）
    ========================================================= */
-const DOWNLOAD_URL = "#"; // 例如: "https://github.com/你/项目/releases/download/v1.0/TheBridge.dmg"
+const DOWNLOAD_URL = "https://thebridge13.oss-cn-guangzhou.aliyuncs.com/the-bridge/The-Bridge.dmg"; // 稳定直链，每次发版覆盖更新
 const GUIDE_URL = "https://tssoft.atlassian.net/wiki/x/dQDfg";
 
 const dlBtn = document.getElementById("downloadBtn");
