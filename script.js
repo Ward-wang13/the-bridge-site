@@ -50,16 +50,22 @@ const isPublicSite = PUBLIC_HOSTS.includes(location.hostname);
 const dlBtn = document.getElementById("downloadBtn");
 const guideLink = document.getElementById("guideLink");
 
+// 使用教程：统一指向 Confluence 文档（新标签打开），内外网一致
+const GUIDE_URL = "https://tssoft.atlassian.net/wiki/x/dQDfg";
+if (guideLink) {
+  guideLink.href = GUIDE_URL;
+  guideLink.target = "_blank";
+  guideLink.rel = "noopener noreferrer";
+}
+
+// 安装包下载：内网站直接下载镜像内的 DMG；公开站提示到内网获取
 if (isPublicSite) {
-  // 公开介绍页：内部工具，不在公网提供安装包
-  const notice = (e) => {
-    e.preventDefault();
-    alert("The Bridge 是公司内部工具，安装包与使用教程请在公司内网的内部门户中获取。");
-  };
-  if (dlBtn) dlBtn.addEventListener("click", notice);
-  if (guideLink) guideLink.addEventListener("click", notice);
+  if (dlBtn) {
+    dlBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      alert("The Bridge 是公司内部工具，安装包请在公司内网的内部门户中获取。");
+    });
+  }
 } else {
-  // 内网站：站点镜像内已包含 /resources/
   if (dlBtn) dlBtn.href = "/resources/The-Bridge.dmg";
-  if (guideLink) guideLink.href = "/resources/guide.html";
 }
