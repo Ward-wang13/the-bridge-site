@@ -1,1 +1,55 @@
 .DS_Store
+
+# === TAE: OS & Editor ===
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+*.iml
+.project
+.classpath
+.settings/
+
+# === TAE: Secrets & Local ===
+.env
+.env.*
+!.env.example
+!.env.sample
+*.pem
+*.key
+*.crt
+*.p12
+.secrets/
+credentials.json
+kubeconfig
+*.kubeconfig
+
+# === TAE: Logs & Temp ===
+*.log
+logs/
+tmp/
+temp/
+.cache/
+
+# === TAE: Static Site / Docker ===
+dist/
+build/
+out/
+coverage/
+.docker/
+docker-compose.override.yml
+scripts/publish-image.sh
+
+# === 大体积安装包：不入 git（仅本地保留，由 docker 构建打包进镜像）===
+resources/*.dmg
+resources/*.pkg
+resources/*.zip
+
+# === 内网构建产物：不进公开 GitHub 仓库，避免泄露内网基础设施 ===
+# （以下文件仍保留在本地磁盘，供 TAE docker 构建使用）
+Dockerfile
+.dockerignore
+resources/

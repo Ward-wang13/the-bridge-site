@@ -39,22 +39,27 @@ window.addEventListener("mousemove", (e) => {
 window.addEventListener("mouseleave", () => (glow.style.opacity = "0"));
 
 /* =========================================================
-   待替换的占位链接 —— 准备好后改这两个变量即可：
-   1. DOWNLOAD_URL：你的 .dmg 下载直链（建议 GitHub Releases）
-   2. GUIDE_URL：你的使用教程页面（Notion / 文档站等）
+   下载 / 教程链接：按部署环境自适应
+   - 内网站（TAE 镜像，已内置 /resources/）：直接下载 DMG / 打开教程
+   - 公开站（thebridge.top / GitHub Pages，无 DMG）：提示在内网获取
+   注意：不在公开源码中硬编码内网地址，避免泄露内部基础设施。
    ========================================================= */
-const DOWNLOAD_URL = "https://thebridge13.oss-cn-guangzhou.aliyuncs.com/the-bridge/The-Bridge.dmg"; // 稳定直链，每次发版覆盖更新
-const GUIDE_URL = "https://tssoft.atlassian.net/wiki/x/dQDfg";
+const PUBLIC_HOSTS = ["thebridge.top", "www.thebridge.top", "ward-wang13.github.io"];
+const isPublicSite = PUBLIC_HOSTS.includes(location.hostname);
 
 const dlBtn = document.getElementById("downloadBtn");
 const guideLink = document.getElementById("guideLink");
-if (DOWNLOAD_URL !== "#" && dlBtn) dlBtn.href = DOWNLOAD_URL;
-if (GUIDE_URL !== "#" && guideLink) guideLink.href = GUIDE_URL;
 
-// 占位链接点击提示
-document.querySelectorAll('a[href="#"]').forEach((a) => {
-  a.addEventListener("click", (e) => {
+if (isPublicSite) {
+  // 公开介绍页：内部工具，不在公网提供安装包
+  const notice = (e) => {
     e.preventDefault();
-    alert("链接待替换：请在 script.js 中填入真实的下载 / 教程地址。");
-  });
-});
+    alert("The Bridge 是公司内部工具，安装包与使用教程请在公司内网的内部门户中获取。");
+  };
+  if (dlBtn) dlBtn.addEventListener("click", notice);
+  if (guideLink) guideLink.addEventListener("click", notice);
+} else {
+  // 内网站：站点镜像内已包含 /resources/
+  if (dlBtn) dlBtn.href = "/resources/The-Bridge.dmg";
+  if (guideLink) guideLink.href = "/resources/guide.html";
+}
