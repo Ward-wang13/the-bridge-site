@@ -26,6 +26,11 @@ logs
 *.key
 
 # Build outputs / caches
+__pycache__
+*.py[cod]
+.pytest_cache
+.mypy_cache
+.ruff_cache
 dist
 build
 out
@@ -33,6 +38,10 @@ coverage
 .cache
 .parcel-cache
 .vite
+
+# Tests and docs are not copied by the runtime Dockerfile
+tests
+docs
 
 # Runtime assets mounted from TAE /data, not baked into the image
 resources
