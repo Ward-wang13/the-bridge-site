@@ -320,6 +320,89 @@ class ServerTestCase(unittest.TestCase):
         finally:
             self.stop_server(httpd)
 
+    def test_device_pairing_token_can_consume_send_tasks(self):
+        httpd, base = self.run_server(StubAuthClient())
+        try:
+            _, created_batch = self.post_json(
+                base + "/api/scrape-batches",
+                {"customers": [{"name": "Alice"}, {"name": "Bob"}]},
+                token="jwt-token",
+            )
+            _, created_task = self.post_json(
+                base + "/api/send-tasks",
+                {"scrape_batch_id": created_batch["batch"]["id"]},
+                token="jwt-token",
+            )
+            task_id = created_task["task"]["id"]
+
+            status, pairing = self.post_json(
+                base + "/api/device-pairings",
+                {"device_name": "测试手机"},
+                token="jwt-token",
+            )
+            self.assertEqual(status, 201)
+            code = pairing["pairing"]["code"]
+            self.assertRegex(code, r"^\d{3}-\d{3}$")
+
+            status, exchanged = self.post_json(
+                base + "/api/device-pairings/exchange",
+                {"code": code, "device_name": "Android", "device_id": "device-1"},
+            )
+            self.assertEqual(status, 200)
+            device_token = exchanged["device_token"]
+            self.assertTrue(device_token.startswith(bridge_server.DEVICE_TOKEN_PREFIX))
+
+            status, listed = self.get_json(base + "/api/send-tasks", token=device_token)
+            self.assertEqual(status, 200)
+            self.assertEqual(listed["tasks"][0]["id"], task_id)
+
+            status, claimed = self.post_json(
+                base + f"/api/send-tasks/{task_id}/claim-next",
+                {"worker_id": "android-1"},
+                token=device_token,
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(claimed["item"]["customer"]["name"], "Alice")
+
+            status, updated = self.post_json(
+                base + f"/api/send-task-items/{claimed['item']['id']}/result",
+                {"status": "success", "result": {"mode": "test"}},
+                token=device_token,
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(updated["item"]["status"], "success")
+        finally:
+            self.stop_server(httpd)
+
+    def test_device_pairing_code_is_single_use_and_device_cannot_create_tasks(self):
+        httpd, base = self.run_server(StubAuthClient())
+        try:
+            _, pairing = self.post_json(
+                base + "/api/device-pairings",
+                {},
+                token="jwt-token",
+            )
+            code = pairing["pairing"]["code"]
+            _, exchanged = self.post_json(
+                base + "/api/device-pairings/exchange",
+                {"code": code},
+            )
+            device_token = exchanged["device_token"]
+
+            with self.assertRaises(urllib.error.HTTPError) as cm:
+                self.post_json(base + "/api/device-pairings/exchange", {"code": code})
+            self.assertEqual(cm.exception.code, 401)
+
+            with self.assertRaises(urllib.error.HTTPError) as cm:
+                self.post_json(
+                    base + "/api/send-tasks",
+                    {"scrape_batch_id": "batch-id"},
+                    token=device_token,
+                )
+            self.assertEqual(cm.exception.code, 401)
+        finally:
+            self.stop_server(httpd)
+
     def test_send_tasks_are_isolated_by_owner_key(self):
         users = {
             "token-a": {

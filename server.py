@@ -9,9 +9,11 @@ validation and derive ownership on the server side.
 from __future__ import annotations
 
 import json
+import hashlib
 import mimetypes
 import os
 import posixpath
+import secrets
 import sqlite3
 import time
 import urllib.error
@@ -38,6 +40,8 @@ PORT = int(os.environ.get("PORT", "80"))
 
 OWNER_FALLBACK_KEYS = ("union_id", "email", "sub", "id")
 DATA_SUBDIRS = ("resources", "updates", "cloud")
+DEVICE_TOKEN_PREFIX = "tbdev_"
+PAIRING_CODE_TTL_SECONDS = int(os.environ.get("PAIRING_CODE_TTL_SECONDS", "600"))
 
 
 def ensure_data_directories(data_root: Path = DATA_ROOT) -> None:
@@ -87,6 +91,19 @@ def public_user(user: dict[str, Any]) -> dict[str, Any]:
         "union_id": user.get("union_id") or "",
         "departments": user.get("departments") or [],
     }
+
+
+def hash_secret(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def normalize_pairing_code(value: str) -> str:
+    return "".join(ch for ch in str(value or "") if ch.isdigit())
+
+
+def format_pairing_code(value: str) -> str:
+    clean = normalize_pairing_code(value)
+    return f"{clean[:3]}-{clean[3:]}" if len(clean) == 6 else clean
 
 
 class AuthGatewayClient:
@@ -201,6 +218,32 @@ class Storage:
 
                 create index if not exists idx_send_task_items_owner_status
                   on send_task_items(owner_key, status, created_at);
+
+                create table if not exists device_pairing_codes(
+                  code_hash text primary key,
+                  owner_key text not null,
+                  device_name text not null,
+                  created_at text not null,
+                  expires_at integer not null,
+                  claimed_at text,
+                  claimed_by text
+                );
+
+                create index if not exists idx_device_pairing_codes_owner
+                  on device_pairing_codes(owner_key, created_at desc);
+
+                create table if not exists device_tokens(
+                  token_hash text primary key,
+                  owner_key text not null,
+                  device_name text not null,
+                  device_id text not null,
+                  created_at text not null,
+                  last_seen_at text not null,
+                  revoked_at text
+                );
+
+                create index if not exists idx_device_tokens_owner
+                  on device_tokens(owner_key, created_at desc);
                 """
             )
             conn.commit()
@@ -535,6 +578,123 @@ class Storage:
             return None
         return {"item": row_to_send_task_item(item), "task": task}
 
+    def create_device_pairing_code(
+        self,
+        owner_key: str,
+        device_name: str = "",
+        ttl_seconds: int = PAIRING_CODE_TTL_SECONDS,
+    ) -> dict[str, Any]:
+        now = now_iso()
+        expires_at = int(time.time()) + max(60, int(ttl_seconds))
+        clean_device_name = str(device_name or "").strip()[:80]
+        for _ in range(20):
+            code = f"{secrets.randbelow(1000000):06d}"
+            code_hash = hash_secret(code)
+            try:
+                with closing(self._connect()) as conn:
+                    conn.execute(
+                        """
+                        insert into device_pairing_codes(
+                          code_hash, owner_key, device_name, created_at,
+                          expires_at, claimed_at, claimed_by
+                        )
+                        values (?, ?, ?, ?, ?, '', '')
+                        """,
+                        (code_hash, owner_key, clean_device_name, now, expires_at),
+                    )
+                    conn.commit()
+                return {
+                    "code": format_pairing_code(code),
+                    "expires_at": expires_at,
+                    "ttl_seconds": expires_at - int(time.time()),
+                    "device_name": clean_device_name,
+                }
+            except sqlite3.IntegrityError:
+                continue
+        raise RuntimeError("failed to allocate pairing code")
+
+    def exchange_device_pairing_code(
+        self,
+        code: str,
+        device_name: str = "",
+        device_id: str = "",
+    ) -> dict[str, Any] | None:
+        clean_code = normalize_pairing_code(code)
+        if len(clean_code) != 6:
+            return None
+        now = now_iso()
+        now_epoch = int(time.time())
+        token = DEVICE_TOKEN_PREFIX + secrets.token_urlsafe(32)
+        token_hash = hash_secret(token)
+        clean_device_name = str(device_name or "").strip()[:80]
+        clean_device_id = str(device_id or "").strip()[:120]
+        with closing(self._connect()) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """
+                select code_hash, owner_key, device_name, expires_at, claimed_at
+                from device_pairing_codes
+                where code_hash = ?
+                """,
+                (hash_secret(clean_code),),
+            ).fetchone()
+            if row is None or row["claimed_at"] or int(row["expires_at"]) < now_epoch:
+                conn.rollback()
+                return None
+            owner_key = row["owner_key"]
+            paired_name = clean_device_name or row["device_name"] or "Android sender"
+            conn.execute(
+                """
+                update device_pairing_codes
+                set claimed_at = ?, claimed_by = ?
+                where code_hash = ?
+                """,
+                (now, clean_device_id or paired_name, row["code_hash"]),
+            )
+            conn.execute(
+                """
+                insert into device_tokens(
+                  token_hash, owner_key, device_name, device_id,
+                  created_at, last_seen_at, revoked_at
+                )
+                values (?, ?, ?, ?, ?, ?, '')
+                """,
+                (token_hash, owner_key, paired_name, clean_device_id, now, now),
+            )
+            conn.commit()
+        return {
+            "device_token": token,
+            "owner_key": owner_key,
+            "device_name": paired_name,
+        }
+
+    def owner_key_for_device_token(self, token: str) -> dict[str, Any] | None:
+        if not token.startswith(DEVICE_TOKEN_PREFIX):
+            return None
+        token_hash = hash_secret(token)
+        now = now_iso()
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                """
+                select owner_key, device_name, device_id
+                from device_tokens
+                where token_hash = ? and (revoked_at is null or revoked_at = '')
+                """,
+                (token_hash,),
+            ).fetchone()
+            if row is None:
+                return None
+            conn.execute(
+                "update device_tokens set last_seen_at = ? where token_hash = ?",
+                (now, token_hash),
+            )
+            conn.commit()
+        return {
+            "owner_key": row["owner_key"],
+            "device_name": row["device_name"],
+            "device_id": row["device_id"],
+        }
+
     def _get_send_task_summary(
         self,
         conn: sqlite3.Connection,
@@ -642,6 +802,12 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib method name
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/api/device-pairings":
+            self.handle_create_device_pairing()
+            return
+        if parsed.path == "/api/device-pairings/exchange":
+            self.handle_exchange_device_pairing()
+            return
         if parsed.path == "/api/scrape-batches":
             self.handle_create_scrape_batch()
             return
@@ -755,15 +921,15 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self.send_json({"ok": True, "task": task}, HTTPStatus.CREATED)
 
     def handle_list_send_tasks(self) -> None:
-        ctx = self.require_user()
+        ctx = self.require_task_consumer()
         if ctx is None:
             return
-        self.server.storage.touch_user(ctx["owner_key"], ctx["user"])  # type: ignore[attr-defined]
+        self.touch_user_context(ctx)
         tasks = self.server.storage.list_send_tasks(ctx["owner_key"])  # type: ignore[attr-defined]
         self.send_json({"ok": True, "tasks": tasks})
 
     def handle_get_send_task(self, raw_task_id: str) -> None:
-        ctx = self.require_user()
+        ctx = self.require_task_consumer()
         if ctx is None:
             return
         task_id = urllib.parse.unquote(raw_task_id).strip("/")
@@ -777,7 +943,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self.send_json({"ok": True, "task": task})
 
     def handle_claim_next_send_task_item(self, raw_task_id: str) -> None:
-        ctx = self.require_user()
+        ctx = self.require_task_consumer()
         if ctx is None:
             return
         task_id = urllib.parse.unquote(raw_task_id).strip("/")
@@ -788,7 +954,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         if body is None:
             return
         worker_id = str(body.get("worker_id") or "").strip()
-        self.server.storage.touch_user(ctx["owner_key"], ctx["user"])  # type: ignore[attr-defined]
+        self.touch_user_context(ctx)
         claimed = self.server.storage.claim_next_send_task_item(  # type: ignore[attr-defined]
             ctx["owner_key"],
             task_id,
@@ -800,7 +966,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self.send_json({"ok": True, **claimed})
 
     def handle_update_send_task_item_result(self, raw_item_id: str) -> None:
-        ctx = self.require_user()
+        ctx = self.require_task_consumer()
         if ctx is None:
             return
         item_id = urllib.parse.unquote(raw_item_id).strip("/")
@@ -822,7 +988,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self.send_json({"error": "result must be an object"}, HTTPStatus.BAD_REQUEST)
             return
         last_error = str(body.get("last_error") or "").strip()
-        self.server.storage.touch_user(ctx["owner_key"], ctx["user"])  # type: ignore[attr-defined]
+        self.touch_user_context(ctx)
         updated = self.server.storage.update_send_task_item_result(  # type: ignore[attr-defined]
             ctx["owner_key"],
             item_id,
@@ -835,10 +1001,52 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return
         self.send_json({"ok": True, **updated})
 
+    def handle_create_device_pairing(self) -> None:
+        ctx = self.require_user()
+        if ctx is None:
+            return
+        body = self.read_optional_json_body()
+        if body is None:
+            return
+        device_name = str(body.get("device_name") or "").strip()
+        self.server.storage.touch_user(ctx["owner_key"], ctx["user"])  # type: ignore[attr-defined]
+        pairing = self.server.storage.create_device_pairing_code(  # type: ignore[attr-defined]
+            ctx["owner_key"],
+            device_name,
+        )
+        self.send_json({"ok": True, "pairing": pairing}, HTTPStatus.CREATED)
+
+    def handle_exchange_device_pairing(self) -> None:
+        body = self.read_json_body()
+        if body is None:
+            return
+        code = str(body.get("code") or "").strip()
+        device_name = str(body.get("device_name") or "").strip()
+        device_id = str(body.get("device_id") or "").strip()
+        if not normalize_pairing_code(code):
+            self.send_json({"error": "code is required"}, HTTPStatus.BAD_REQUEST)
+            return
+        exchanged = self.server.storage.exchange_device_pairing_code(  # type: ignore[attr-defined]
+            code,
+            device_name,
+            device_id,
+        )
+        if exchanged is None:
+            self.send_json({"error": "invalid or expired pairing code"}, HTTPStatus.UNAUTHORIZED)
+            return
+        self.send_json({
+            "ok": True,
+            "device_token": exchanged["device_token"],
+            "device_name": exchanged["device_name"],
+        })
+
     def require_user(self) -> dict[str, Any] | None:
         token = extract_bearer_token(self.headers.get("Authorization"))
         if not token:
             self.send_json({"error": "missing bearer token"}, HTTPStatus.UNAUTHORIZED)
+            return None
+        if token.startswith(DEVICE_TOKEN_PREFIX):
+            self.send_json({"error": "user token required"}, HTTPStatus.UNAUTHORIZED)
             return None
         try:
             user = self.server.auth_client.userinfo(token)  # type: ignore[attr-defined]
@@ -849,7 +1057,25 @@ class BridgeHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self.send_json({"error": "auth failed", "detail": str(exc)}, HTTPStatus.BAD_GATEWAY)
             return None
-        return {"user": user, "owner_key": owner_key}
+        return {"auth_type": "user", "user": user, "owner_key": owner_key}
+
+    def require_task_consumer(self) -> dict[str, Any] | None:
+        token = extract_bearer_token(self.headers.get("Authorization"))
+        if not token:
+            self.send_json({"error": "missing bearer token"}, HTTPStatus.UNAUTHORIZED)
+            return None
+        if token.startswith(DEVICE_TOKEN_PREFIX):
+            device = self.server.storage.owner_key_for_device_token(token)  # type: ignore[attr-defined]
+            if device is None:
+                self.send_json({"error": "not authenticated"}, HTTPStatus.UNAUTHORIZED)
+                return None
+            return {"auth_type": "device", **device}
+        return self.require_user()
+
+    def touch_user_context(self, ctx: dict[str, Any]) -> None:
+        user = ctx.get("user")
+        if isinstance(user, dict):
+            self.server.storage.touch_user(ctx["owner_key"], user)  # type: ignore[attr-defined]
 
     def read_json_body(self) -> dict[str, Any] | None:
         length_raw = self.headers.get("Content-Length") or "0"
