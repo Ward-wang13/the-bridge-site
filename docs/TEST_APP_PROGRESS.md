@@ -23,7 +23,7 @@ download/update app.
 - Isolated test API app: `thebridgesite`
 - Test API domain: `https://thebridgesite.tae.vera-mesh.com`
 - Test API image:
-  `registry.pixcakeai.com/tae/the-bridge-site:20260622195604`
+  `registry.pixcakeai.com/tae/the-bridge-site:202606222145-device-pairing`
 - Test API storage: `10Gi` mounted at `/data`
 - Test API app data root: `/data/thebridgesite`
 - Test API database path: `/data/thebridgesite/cloud/thebridge.db`
@@ -212,7 +212,7 @@ Site/API repo:
 Deployment on 2026-06-22:
 
 - Test app: `thebridgesite`
-- Image: `registry.pixcakeai.com/tae/the-bridge-site:20260622195604`
+- Image: `registry.pixcakeai.com/tae/the-bridge-site:202606222145-device-pairing`
 - Health: `GET /api/health -> 200`
 - Production app `thebridge` stayed on:
   `registry.pixcakeai.com/tae/the-bridge-site:data-static-202606111538`
@@ -229,6 +229,21 @@ Real-token task API smoke:
 - After claim: `280` pending items
 - The smoke item was reset to `pending`.
 - Final pending count: `281`
+
+Mobile pairing smoke:
+
+- Desktop local config points at:
+  `https://thebridgesite.tae.vera-mesh.com`
+- Desktop auth token was valid.
+- `POST /api/device-pairings -> 201`
+- `POST /api/device-pairings/exchange -> 200`
+- Returned token prefix: `tbdev_`
+- Device token `GET /api/send-tasks -> 200`
+- Visible task count through device token: `1`
+- Visible task id:
+  `acf9e40b2f7946709b548f16f3dbd18e`
+- Android debug APK with pairing UI was installed on USB device
+  `2312DRA50C`.
 
 Design doc:
 
@@ -267,31 +282,25 @@ ts-skill use tae-app-manager
 
 1. Continue the Android sender MVP in the desktop repo:
    `/Users/ward/for_claude/the-bridge/mobile/android-sender`
-   - Current first pass uses a manually pasted bearer token for development.
+   - Current first pass uses desktop-generated pairing codes.
+   - Android exchanges the pairing code for a limited `tbdev_` device token.
    - It can list send tasks, select a task, claim next, and manually write
      `success`, `failed`, or `skipped`.
-   - It does not yet do Android auth-gateway login, device pairing, final
-     message rendering, or Enterprise WeChat AccessibilityService sending.
+   - It does not yet do final message rendering or Enterprise WeChat
+     AccessibilityService sending.
 
-2. Add a production-grade mobile identity flow.
-   - Preferred first user-test path: desktop creates a server-issued pairing
-     code, Android enters it, TAE issues a limited device token bound to the
-     same `owner_key`.
-   - Alternative: register an Android redirect URL with auth-gateway and let
-     Android log in directly.
-
-3. Add the message payload contract for mobile sending.
+2. Add the message payload contract for mobile sending.
    - Ensure each claimed item includes the final message text, optional image
      reference, `send_order`, and searchable contact keys.
    - Avoid making Android reimplement desktop classification/template logic.
 
-4. Build the Android AccessibilityService sender.
+3. Build the Android AccessibilityService sender.
    - Search Enterprise WeChat contacts.
    - Send text/image in the requested order.
    - Record failed/skipped reasons.
    - Write the result back through `/api/send-task-items/:id/result`.
 
-5. Add real-token isolation smoke testing if possible.
+4. Add real-token isolation smoke testing if possible.
    - Verify `/api/me`
    - Verify task list/detail with the same login
    - Verify a second user cannot see or claim the first user's tasks
