@@ -2,6 +2,17 @@
 
 This is the internal web download/update site.
 
+## Direction 1 Test API Handoff
+
+For the current split-delivery exploration, read
+`docs/TEST_APP_PROGRESS.md` before making changes. It records the active test
+API app, auth/data-isolation decisions, completed desktop/cloud work, and the
+production boundary.
+
+Do not deploy the Python API image to production app `thebridge`. Keep
+production on the static Nginx image unless static DMG/update serving has
+Nginx-equivalent `HEAD` and byte-range behavior.
+
 ## Production TAE App
 
 - App name: `thebridge`

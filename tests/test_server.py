@@ -207,6 +207,180 @@ class ServerTestCase(unittest.TestCase):
         finally:
             self.stop_server(httpd)
 
+    def test_create_list_get_and_update_send_task(self):
+        httpd, base = self.run_server(StubAuthClient())
+        try:
+            _, created_batch = self.post_json(
+                base + "/api/scrape-batches",
+                {
+                    "source": "salesforce",
+                    "customers": [
+                        {"name": "Alice", "phone": "123"},
+                        {"name": "Bob", "phone": "456"},
+                    ],
+                },
+                token="jwt-token",
+            )
+            batch_id = created_batch["batch"]["id"]
+
+            status, created_task = self.post_json(
+                base + "/api/send-tasks",
+                {
+                    "scrape_batch_id": batch_id,
+                    "channel": "wecom",
+                    "message_template": "Hello {{name}}",
+                    "metadata": {"created_by": "desktop"},
+                    "owner_key": "attacker-controlled",
+                },
+                token="jwt-token",
+            )
+            self.assertEqual(status, 201)
+            task = created_task["task"]
+            self.assertEqual(task["scrape_batch_id"], batch_id)
+            self.assertEqual(task["source"], "salesforce")
+            self.assertEqual(task["channel"], "wecom")
+            self.assertEqual(task["message_template"], "Hello {{name}}")
+            self.assertEqual(task["item_count"], 2)
+            self.assertEqual(task["pending_count"], 2)
+            self.assertEqual(task["success_count"], 0)
+            self.assertEqual(task["status"], "pending")
+            task_id = task["id"]
+
+            status, listed = self.get_json(base + "/api/send-tasks", token="jwt-token")
+            self.assertEqual(status, 200)
+            self.assertEqual(len(listed["tasks"]), 1)
+            self.assertEqual(listed["tasks"][0]["id"], task_id)
+            self.assertNotIn("items", listed["tasks"][0])
+
+            status, detail = self.get_json(base + f"/api/send-tasks/{task_id}", token="jwt-token")
+            self.assertEqual(status, 200)
+            self.assertEqual(len(detail["task"]["items"]), 2)
+            first_item = detail["task"]["items"][0]
+            self.assertEqual(first_item["customer"]["name"], "Alice")
+            self.assertEqual(first_item["status"], "pending")
+
+            status, updated = self.post_json(
+                base + f"/api/send-task-items/{first_item['id']}/result",
+                {
+                    "status": "success",
+                    "result": {"sent_at": "2026-06-22T10:30:00Z"},
+                },
+                token="jwt-token",
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(updated["item"]["status"], "success")
+            self.assertEqual(updated["task"]["status"], "in_progress")
+            self.assertEqual(updated["task"]["pending_count"], 1)
+            self.assertEqual(updated["task"]["success_count"], 1)
+        finally:
+            self.stop_server(httpd)
+
+    def test_send_tasks_are_isolated_by_owner_key(self):
+        users = {
+            "token-a": {
+                "email": "a@example.com",
+                "name": "A",
+                "provider": "corp",
+                "org_id": "org",
+                "union_id": "user-a",
+            },
+            "token-b": {
+                "email": "b@example.com",
+                "name": "B",
+                "provider": "corp",
+                "org_id": "org",
+                "union_id": "user-b",
+            },
+        }
+        httpd, base = self.run_server(StubAuthClient(users=users))
+        try:
+            _, created_batch = self.post_json(
+                base + "/api/scrape-batches",
+                {"customers": [{"name": "Private"}]},
+                token="token-a",
+            )
+            batch_id = created_batch["batch"]["id"]
+            _, created_task = self.post_json(
+                base + "/api/send-tasks",
+                {"scrape_batch_id": batch_id},
+                token="token-a",
+            )
+            task_id = created_task["task"]["id"]
+
+            _, listed_a = self.get_json(base + "/api/send-tasks", token="token-a")
+            _, listed_b = self.get_json(base + "/api/send-tasks", token="token-b")
+            self.assertEqual(len(listed_a["tasks"]), 1)
+            self.assertEqual(listed_b["tasks"], [])
+
+            with self.assertRaises(urllib.error.HTTPError) as cm:
+                self.post_json(
+                    base + "/api/send-tasks",
+                    {"scrape_batch_id": batch_id},
+                    token="token-b",
+                )
+            self.assertEqual(cm.exception.code, 404)
+
+            with self.assertRaises(urllib.error.HTTPError) as cm:
+                self.get_json(base + f"/api/send-tasks/{task_id}", token="token-b")
+            self.assertEqual(cm.exception.code, 404)
+        finally:
+            self.stop_server(httpd)
+
+    def test_create_send_task_validates_batch_id_and_metadata(self):
+        httpd, base = self.run_server(StubAuthClient())
+        try:
+            with self.assertRaises(urllib.error.HTTPError) as cm:
+                self.post_json(base + "/api/send-tasks", {}, token="jwt-token")
+            self.assertEqual(cm.exception.code, 400)
+            body = json.loads(cm.exception.read().decode("utf-8"))
+            self.assertEqual(body["error"], "scrape_batch_id is required")
+
+            with self.assertRaises(urllib.error.HTTPError) as cm:
+                self.post_json(
+                    base + "/api/send-tasks",
+                    {"scrape_batch_id": "missing", "metadata": []},
+                    token="jwt-token",
+                )
+            self.assertEqual(cm.exception.code, 400)
+            body = json.loads(cm.exception.read().decode("utf-8"))
+            self.assertEqual(body["error"], "metadata must be an object")
+        finally:
+            self.stop_server(httpd)
+
+    def test_update_send_task_item_result_validates_status(self):
+        httpd, base = self.run_server(StubAuthClient())
+        try:
+            _, created_batch = self.post_json(
+                base + "/api/scrape-batches",
+                {"customers": [{"name": "Alice"}]},
+                token="jwt-token",
+            )
+            _, created_task = self.post_json(
+                base + "/api/send-tasks",
+                {"scrape_batch_id": created_batch["batch"]["id"]},
+                token="jwt-token",
+            )
+            _, detail = self.get_json(
+                base + f"/api/send-tasks/{created_task['task']['id']}",
+                token="jwt-token",
+            )
+            item_id = detail["task"]["items"][0]["id"]
+
+            with self.assertRaises(urllib.error.HTTPError) as cm:
+                self.post_json(
+                    base + f"/api/send-task-items/{item_id}/result",
+                    {"status": "unknown"},
+                    token="jwt-token",
+                )
+            self.assertEqual(cm.exception.code, 400)
+            body = json.loads(cm.exception.read().decode("utf-8"))
+            self.assertEqual(
+                body["error"],
+                "status must be one of pending, success, failed, skipped",
+            )
+        finally:
+            self.stop_server(httpd)
+
 
 if __name__ == "__main__":
     unittest.main()

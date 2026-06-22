@@ -37,6 +37,12 @@ AUTH_USERINFO_TIMEOUT = float(os.environ.get("AUTH_USERINFO_TIMEOUT", "10"))
 PORT = int(os.environ.get("PORT", "80"))
 
 OWNER_FALLBACK_KEYS = ("union_id", "email", "sub", "id")
+DATA_SUBDIRS = ("resources", "updates", "cloud")
+
+
+def ensure_data_directories(data_root: Path = DATA_ROOT) -> None:
+    for subdir in DATA_SUBDIRS:
+        (data_root / subdir).mkdir(parents=True, exist_ok=True)
 
 
 def extract_bearer_token(header_value: str | None) -> str:
@@ -109,8 +115,10 @@ class AuthGatewayClient:
 
 
 class Storage:
-    def __init__(self, db_path: Path = DB_PATH):
+    def __init__(self, db_path: Path = DB_PATH, data_root: Path | None = None):
         self.db_path = db_path
+        root = data_root or (DATA_ROOT if db_path == DB_PATH else db_path.parent)
+        ensure_data_directories(root)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
 
@@ -150,6 +158,49 @@ class Storage:
 
                 create index if not exists idx_scrape_batches_owner_created
                   on scrape_batches(owner_key, created_at desc);
+
+                create table if not exists send_tasks(
+                  id text primary key,
+                  owner_key text not null,
+                  scrape_batch_id text not null,
+                  source text not null,
+                  channel text not null,
+                  message_template text not null,
+                  status text not null,
+                  created_at text not null,
+                  updated_at text not null,
+                  metadata_json text not null,
+                  item_count integer not null,
+                  pending_count integer not null,
+                  success_count integer not null,
+                  failed_count integer not null,
+                  skipped_count integer not null,
+                  foreign key(scrape_batch_id) references scrape_batches(id)
+                );
+
+                create index if not exists idx_send_tasks_owner_created
+                  on send_tasks(owner_key, created_at desc);
+
+                create table if not exists send_task_items(
+                  id text primary key,
+                  task_id text not null,
+                  owner_key text not null,
+                  scrape_batch_id text not null,
+                  customer_index integer not null,
+                  customer_json text not null,
+                  status text not null,
+                  created_at text not null,
+                  updated_at text not null,
+                  result_json text not null,
+                  last_error text not null,
+                  foreign key(task_id) references send_tasks(id) on delete cascade
+                );
+
+                create index if not exists idx_send_task_items_task
+                  on send_task_items(task_id, customer_index);
+
+                create index if not exists idx_send_task_items_owner_status
+                  on send_task_items(owner_key, status, created_at);
                 """
             )
             conn.commit()
@@ -255,6 +306,244 @@ class Storage:
             return None
         return row_to_batch_detail(row)
 
+    def create_send_task_from_batch(
+        self,
+        owner_key: str,
+        scrape_batch_id: str,
+        channel: str,
+        message_template: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        now = now_iso()
+        task_id = uuid.uuid4().hex
+        with closing(self._connect()) as conn:
+            batch = conn.execute(
+                """
+                select id, source, customers_json
+                from scrape_batches
+                where owner_key = ? and id = ?
+                """,
+                (owner_key, scrape_batch_id),
+            ).fetchone()
+            if batch is None:
+                return None
+            customers = json.loads(batch["customers_json"] or "[]")
+            if not isinstance(customers, list):
+                customers = []
+            item_count = len(customers)
+            conn.execute(
+                """
+                insert into send_tasks(
+                  id, owner_key, scrape_batch_id, source, channel,
+                  message_template, status, created_at, updated_at,
+                  metadata_json, item_count, pending_count, success_count,
+                  failed_count, skipped_count
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    task_id,
+                    owner_key,
+                    scrape_batch_id,
+                    batch["source"],
+                    channel,
+                    message_template,
+                    "pending" if item_count else "empty",
+                    now,
+                    now,
+                    json.dumps(metadata or {}, ensure_ascii=False),
+                    item_count,
+                    item_count,
+                    0,
+                    0,
+                    0,
+                ),
+            )
+            conn.executemany(
+                """
+                insert into send_task_items(
+                  id, task_id, owner_key, scrape_batch_id, customer_index,
+                  customer_json, status, created_at, updated_at,
+                  result_json, last_error
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        uuid.uuid4().hex,
+                        task_id,
+                        owner_key,
+                        scrape_batch_id,
+                        index,
+                        json.dumps(customer, ensure_ascii=False),
+                        "pending",
+                        now,
+                        now,
+                        "{}",
+                        "",
+                    )
+                    for index, customer in enumerate(customers)
+                ],
+            )
+            conn.commit()
+            return self._get_send_task_summary(conn, owner_key, task_id)
+
+    def list_send_tasks(self, owner_key: str) -> list[dict[str, Any]]:
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                """
+                select id, scrape_batch_id, source, channel, message_template,
+                       status, created_at, updated_at, metadata_json, item_count,
+                       pending_count, success_count, failed_count, skipped_count
+                from send_tasks
+                where owner_key = ?
+                order by created_at desc
+                """,
+                (owner_key,),
+            ).fetchall()
+        return [row_to_send_task_summary(row) for row in rows]
+
+    def get_send_task(self, owner_key: str, task_id: str) -> dict[str, Any] | None:
+        with closing(self._connect()) as conn:
+            task = self._get_send_task_summary(conn, owner_key, task_id)
+            if task is None:
+                return None
+            rows = conn.execute(
+                """
+                select id, task_id, scrape_batch_id, customer_index, customer_json,
+                       status, created_at, updated_at, result_json, last_error
+                from send_task_items
+                where owner_key = ? and task_id = ?
+                order by customer_index asc
+                """,
+                (owner_key, task_id),
+            ).fetchall()
+        task["items"] = [row_to_send_task_item(row) for row in rows]
+        return task
+
+    def update_send_task_item_result(
+        self,
+        owner_key: str,
+        item_id: str,
+        status: str,
+        result: dict[str, Any] | None = None,
+        last_error: str = "",
+    ) -> dict[str, Any] | None:
+        now = now_iso()
+        with closing(self._connect()) as conn:
+            existing = conn.execute(
+                """
+                select id, task_id
+                from send_task_items
+                where owner_key = ? and id = ?
+                """,
+                (owner_key, item_id),
+            ).fetchone()
+            if existing is None:
+                return None
+            conn.execute(
+                """
+                update send_task_items
+                set status = ?, updated_at = ?, result_json = ?, last_error = ?
+                where owner_key = ? and id = ?
+                """,
+                (
+                    status,
+                    now,
+                    json.dumps(result or {}, ensure_ascii=False),
+                    last_error,
+                    owner_key,
+                    item_id,
+                ),
+            )
+            self._refresh_send_task_counts(conn, owner_key, existing["task_id"], now)
+            item = conn.execute(
+                """
+                select id, task_id, scrape_batch_id, customer_index, customer_json,
+                       status, created_at, updated_at, result_json, last_error
+                from send_task_items
+                where owner_key = ? and id = ?
+                """,
+                (owner_key, item_id),
+            ).fetchone()
+            task = self._get_send_task_summary(conn, owner_key, existing["task_id"])
+            conn.commit()
+        if item is None or task is None:
+            return None
+        return {"item": row_to_send_task_item(item), "task": task}
+
+    def _get_send_task_summary(
+        self,
+        conn: sqlite3.Connection,
+        owner_key: str,
+        task_id: str,
+    ) -> dict[str, Any] | None:
+        row = conn.execute(
+            """
+            select id, scrape_batch_id, source, channel, message_template,
+                   status, created_at, updated_at, metadata_json, item_count,
+                   pending_count, success_count, failed_count, skipped_count
+            from send_tasks
+            where owner_key = ? and id = ?
+            """,
+            (owner_key, task_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return row_to_send_task_summary(row)
+
+    def _refresh_send_task_counts(
+        self,
+        conn: sqlite3.Connection,
+        owner_key: str,
+        task_id: str,
+        updated_at: str,
+    ) -> None:
+        rows = conn.execute(
+            """
+            select status, count(*) as count
+            from send_task_items
+            where owner_key = ? and task_id = ?
+            group by status
+            """,
+            (owner_key, task_id),
+        ).fetchall()
+        counts = {row["status"]: int(row["count"]) for row in rows}
+        item_count = sum(counts.values())
+        success_count = counts.get("success", 0)
+        failed_count = counts.get("failed", 0)
+        skipped_count = counts.get("skipped", 0)
+        pending_count = max(item_count - success_count - failed_count - skipped_count, 0)
+        if item_count == 0:
+            task_status = "empty"
+        elif pending_count > 0 and (success_count or failed_count or skipped_count):
+            task_status = "in_progress"
+        elif pending_count > 0:
+            task_status = "pending"
+        elif failed_count > 0:
+            task_status = "done_with_errors"
+        else:
+            task_status = "done"
+        conn.execute(
+            """
+            update send_tasks
+            set status = ?, updated_at = ?, item_count = ?, pending_count = ?,
+                success_count = ?, failed_count = ?, skipped_count = ?
+            where owner_key = ? and id = ?
+            """,
+            (
+                task_status,
+                updated_at,
+                item_count,
+                pending_count,
+                success_count,
+                failed_count,
+                skipped_count,
+                owner_key,
+                task_id,
+            ),
+        )
+
 
 class BridgeHandler(BaseHTTPRequestHandler):
     server_version = "TheBridgeSite/0.1"
@@ -274,6 +563,12 @@ class BridgeHandler(BaseHTTPRequestHandler):
         if parsed.path.startswith("/api/scrape-batches/"):
             self.handle_get_scrape_batch(parsed.path.removeprefix("/api/scrape-batches/"))
             return
+        if parsed.path == "/api/send-tasks":
+            self.handle_list_send_tasks()
+            return
+        if parsed.path.startswith("/api/send-tasks/"):
+            self.handle_get_send_task(parsed.path.removeprefix("/api/send-tasks/"))
+            return
         if parsed.path.startswith("/api/"):
             self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
             return
@@ -283,6 +578,13 @@ class BridgeHandler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/api/scrape-batches":
             self.handle_create_scrape_batch()
+            return
+        if parsed.path == "/api/send-tasks":
+            self.handle_create_send_task()
+            return
+        if parsed.path.startswith("/api/send-task-items/") and parsed.path.endswith("/result"):
+            raw_item_id = parsed.path.removeprefix("/api/send-task-items/").removesuffix("/result")
+            self.handle_update_send_task_item_result(raw_item_id)
             return
         if parsed.path.startswith("/api/"):
             self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
@@ -309,7 +611,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return
         source = str(body.get("source") or "salesforce").strip() or "salesforce"
         customers = body.get("customers")
-        metadata = body.get("metadata") or {}
+        metadata = body["metadata"] if "metadata" in body else {}
         if not isinstance(customers, list):
             self.send_json({"error": "customers must be an array"}, HTTPStatus.BAD_REQUEST)
             return
@@ -351,6 +653,94 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
             return
         self.send_json({"ok": True, "batch": batch})
+
+    def handle_create_send_task(self) -> None:
+        ctx = self.require_user()
+        if ctx is None:
+            return
+        body = self.read_json_body()
+        if body is None:
+            return
+        scrape_batch_id = str(body.get("scrape_batch_id") or "").strip()
+        if not scrape_batch_id:
+            self.send_json({"error": "scrape_batch_id is required"}, HTTPStatus.BAD_REQUEST)
+            return
+        channel = str(body.get("channel") or "wecom").strip() or "wecom"
+        message_template = str(body.get("message_template") or "").strip()
+        metadata = body["metadata"] if "metadata" in body else {}
+        if not isinstance(metadata, dict):
+            self.send_json({"error": "metadata must be an object"}, HTTPStatus.BAD_REQUEST)
+            return
+        self.server.storage.touch_user(ctx["owner_key"], ctx["user"])  # type: ignore[attr-defined]
+        task = self.server.storage.create_send_task_from_batch(  # type: ignore[attr-defined]
+            ctx["owner_key"],
+            scrape_batch_id,
+            channel,
+            message_template,
+            metadata,
+        )
+        if task is None:
+            self.send_json({"error": "scrape batch not found"}, HTTPStatus.NOT_FOUND)
+            return
+        self.send_json({"ok": True, "task": task}, HTTPStatus.CREATED)
+
+    def handle_list_send_tasks(self) -> None:
+        ctx = self.require_user()
+        if ctx is None:
+            return
+        self.server.storage.touch_user(ctx["owner_key"], ctx["user"])  # type: ignore[attr-defined]
+        tasks = self.server.storage.list_send_tasks(ctx["owner_key"])  # type: ignore[attr-defined]
+        self.send_json({"ok": True, "tasks": tasks})
+
+    def handle_get_send_task(self, raw_task_id: str) -> None:
+        ctx = self.require_user()
+        if ctx is None:
+            return
+        task_id = urllib.parse.unquote(raw_task_id).strip("/")
+        if not task_id:
+            self.send_json({"error": "missing task id"}, HTTPStatus.BAD_REQUEST)
+            return
+        task = self.server.storage.get_send_task(ctx["owner_key"], task_id)  # type: ignore[attr-defined]
+        if task is None:
+            self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+            return
+        self.send_json({"ok": True, "task": task})
+
+    def handle_update_send_task_item_result(self, raw_item_id: str) -> None:
+        ctx = self.require_user()
+        if ctx is None:
+            return
+        item_id = urllib.parse.unquote(raw_item_id).strip("/")
+        if not item_id:
+            self.send_json({"error": "missing item id"}, HTTPStatus.BAD_REQUEST)
+            return
+        body = self.read_json_body()
+        if body is None:
+            return
+        status = str(body.get("status") or "").strip()
+        if status not in {"pending", "success", "failed", "skipped"}:
+            self.send_json(
+                {"error": "status must be one of pending, success, failed, skipped"},
+                HTTPStatus.BAD_REQUEST,
+            )
+            return
+        result = body.get("result") or {}
+        if not isinstance(result, dict):
+            self.send_json({"error": "result must be an object"}, HTTPStatus.BAD_REQUEST)
+            return
+        last_error = str(body.get("last_error") or "").strip()
+        self.server.storage.touch_user(ctx["owner_key"], ctx["user"])  # type: ignore[attr-defined]
+        updated = self.server.storage.update_send_task_item_result(  # type: ignore[attr-defined]
+            ctx["owner_key"],
+            item_id,
+            status,
+            result,
+            last_error,
+        )
+        if updated is None:
+            self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+            return
+        self.send_json({"ok": True, **updated})
 
     def require_user(self) -> dict[str, Any] | None:
         token = extract_bearer_token(self.headers.get("Authorization"))
@@ -494,6 +884,40 @@ def row_to_batch_detail(row: sqlite3.Row) -> dict[str, Any]:
     batch = row_to_batch_summary(row)
     batch["customers"] = json.loads(row["customers_json"] or "[]")
     return batch
+
+
+def row_to_send_task_summary(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "scrape_batch_id": row["scrape_batch_id"],
+        "source": row["source"],
+        "channel": row["channel"],
+        "message_template": row["message_template"],
+        "status": row["status"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "metadata": json.loads(row["metadata_json"] or "{}"),
+        "item_count": row["item_count"],
+        "pending_count": row["pending_count"],
+        "success_count": row["success_count"],
+        "failed_count": row["failed_count"],
+        "skipped_count": row["skipped_count"],
+    }
+
+
+def row_to_send_task_item(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "task_id": row["task_id"],
+        "scrape_batch_id": row["scrape_batch_id"],
+        "customer_index": row["customer_index"],
+        "customer": json.loads(row["customer_json"] or "{}"),
+        "status": row["status"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "result": json.loads(row["result_json"] or "{}"),
+        "last_error": row["last_error"],
+    }
 
 
 def main() -> None:

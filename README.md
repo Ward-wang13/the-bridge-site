@@ -47,6 +47,10 @@ GET /api/me      # 校验 JWT，返回当前用户与服务端 owner_key
 POST /api/scrape-batches      # 上传一批抓取客户数据
 GET  /api/scrape-batches      # 列出当前用户自己的抓取批次
 GET  /api/scrape-batches/:id  # 查看当前用户自己的某个抓取批次
+POST /api/send-tasks          # 从当前用户自己的抓取批次生成发送任务
+GET  /api/send-tasks          # 列出当前用户自己的发送任务
+GET  /api/send-tasks/:id      # 查看发送任务与任务项
+POST /api/send-task-items/:id/result  # 回写单条任务项发送结果
 ```
 
 服务端会调用 `https://auth-gateway.truesightai.com/userinfo` 校验 token，
@@ -58,6 +62,22 @@ agent 分析结果都必须按这个 `owner_key` 写入和查询。
 ```text
 /data/thebridge/cloud/thebridge.db
 ```
+
+发送任务由已上传的抓取批次生成。创建任务时传入：
+
+```json
+{
+  "scrape_batch_id": "batch-id",
+  "channel": "wecom",
+  "message_template": "Hello {{name}}",
+  "metadata": {}
+}
+```
+
+服务端会确认该批次属于当前登录用户，再把批次里的客户展开为
+`send_task_items`。手机/安卓发送器后续可以拉取任务详情，逐条发送后调用
+`/api/send-task-items/:id/result` 回写 `success`、`failed`、`skipped` 或
+`pending`。
 
 后端会忽略客户端传来的 `owner_key` / `user_id` 等归属字段，只使用服务端通过
 `/userinfo` 推导出的 `owner_key`。
