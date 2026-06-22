@@ -23,7 +23,7 @@ download/update app.
 - Isolated test API app: `thebridgesite`
 - Test API domain: `https://thebridgesite.tae.vera-mesh.com`
 - Test API image:
-  `registry.pixcakeai.com/tae/the-bridge-site:20260622185334`
+  `registry.pixcakeai.com/tae/the-bridge-site:20260622195604`
 - Test API storage: `10Gi` mounted at `/data`
 - Test API app data root: `/data/thebridgesite`
 - Test API database path: `/data/thebridgesite/cloud/thebridge.db`
@@ -204,6 +204,31 @@ Site/API repo:
   - `535f096 feat: add authenticated cloud API for scrape batches`
   - `66f3e0d fix: use supported internal python base image`
   - `d56b05f feat: add send task queue API`
+  - `9945a4e feat: add send task item claiming`
+  - `c4771d7 chore: tighten docker build context`
+
+## Latest Deployment Smoke
+
+Deployment on 2026-06-22:
+
+- Test app: `thebridgesite`
+- Image: `registry.pixcakeai.com/tae/the-bridge-site:20260622195604`
+- Health: `GET /api/health -> 200`
+- Production app `thebridge` stayed on:
+  `registry.pixcakeai.com/tae/the-bridge-site:data-static-202606111538`
+
+Real-token task API smoke:
+
+- `GET /api/send-tasks -> 200`
+- Visible task count: `1`
+- Smoke task id: `acf9e40b2f7946709b548f16f3dbd18e`
+- Before claim: `281` pending items
+- `POST /api/send-tasks/:id/claim-next -> 200`
+- Claimed item status: `in_progress`
+- Claimed item worker id: `codex-smoke`
+- After claim: `280` pending items
+- The smoke item was reset to `pending`.
+- Final pending count: `281`
 
 Design doc:
 
