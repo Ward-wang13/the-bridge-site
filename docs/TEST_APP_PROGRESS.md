@@ -265,20 +265,33 @@ ts-skill use tae-app-manager
 
 ## Next Recommended Work
 
-1. Finish and deploy mobile/Android sender consumption API.
-   - Commit `POST /api/send-tasks/:id/claim-next`
-   - Deploy only to test app `thebridgesite`
-   - Smoke test `claim-next` with the real desktop-created task
+1. Continue the Android sender MVP in the desktop repo:
+   `/Users/ward/for_claude/the-bridge/mobile/android-sender`
+   - Current first pass uses a manually pasted bearer token for development.
+   - It can list send tasks, select a task, claim next, and manually write
+     `success`, `failed`, or `skipped`.
+   - It does not yet do Android auth-gateway login, device pairing, final
+     message rendering, or Enterprise WeChat AccessibilityService sending.
 
-2. Add mobile/Android sender client.
-   - Authenticate with auth-gateway
-   - Pull `GET /api/send-tasks`
-   - Open `GET /api/send-tasks/:id`
-   - Claim work with `POST /api/send-tasks/:id/claim-next`
-   - Send the claimed item
-   - Write result through `POST /api/send-task-items/:id/result`
+2. Add a production-grade mobile identity flow.
+   - Preferred first user-test path: desktop creates a server-issued pairing
+     code, Android enters it, TAE issues a limited device token bound to the
+     same `owner_key`.
+   - Alternative: register an Android redirect URL with auth-gateway and let
+     Android log in directly.
 
-3. Add real-token isolation smoke testing if possible.
+3. Add the message payload contract for mobile sending.
+   - Ensure each claimed item includes the final message text, optional image
+     reference, `send_order`, and searchable contact keys.
+   - Avoid making Android reimplement desktop classification/template logic.
+
+4. Build the Android AccessibilityService sender.
+   - Search Enterprise WeChat contacts.
+   - Send text/image in the requested order.
+   - Record failed/skipped reasons.
+   - Write the result back through `/api/send-task-items/:id/result`.
+
+5. Add real-token isolation smoke testing if possible.
    - Verify `/api/me`
    - Verify task list/detail with the same login
    - Verify a second user cannot see or claim the first user's tasks
