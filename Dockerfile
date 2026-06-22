@@ -1,4 +1,4 @@
-FROM registry.pixcakeai.com/pub/python:3.12-alpine
+FROM registry.pixcakeai.com/pub/python:3.12-slim
 
 WORKDIR /app
 
