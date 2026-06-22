@@ -275,6 +275,51 @@ class ServerTestCase(unittest.TestCase):
         finally:
             self.stop_server(httpd)
 
+    def test_claim_next_send_task_item(self):
+        httpd, base = self.run_server(StubAuthClient())
+        try:
+            _, created_batch = self.post_json(
+                base + "/api/scrape-batches",
+                {"customers": [{"name": "Alice"}, {"name": "Bob"}]},
+                token="jwt-token",
+            )
+            _, created_task = self.post_json(
+                base + "/api/send-tasks",
+                {"scrape_batch_id": created_batch["batch"]["id"]},
+                token="jwt-token",
+            )
+            task_id = created_task["task"]["id"]
+
+            status, claimed = self.post_json(
+                base + f"/api/send-tasks/{task_id}/claim-next",
+                {"worker_id": "android-1"},
+                token="jwt-token",
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(claimed["item"]["customer"]["name"], "Alice")
+            self.assertEqual(claimed["item"]["status"], "in_progress")
+            self.assertEqual(claimed["item"]["result"]["worker_id"], "android-1")
+            self.assertEqual(claimed["task"]["status"], "in_progress")
+            self.assertEqual(claimed["task"]["pending_count"], 1)
+
+            _, second = self.post_json(
+                base + f"/api/send-tasks/{task_id}/claim-next",
+                {},
+                token="jwt-token",
+            )
+            self.assertEqual(second["item"]["customer"]["name"], "Bob")
+            self.assertEqual(second["task"]["pending_count"], 0)
+
+            _, empty = self.post_json(
+                base + f"/api/send-tasks/{task_id}/claim-next",
+                {},
+                token="jwt-token",
+            )
+            self.assertIsNone(empty["item"])
+            self.assertEqual(empty["task"]["pending_count"], 0)
+        finally:
+            self.stop_server(httpd)
+
     def test_send_tasks_are_isolated_by_owner_key(self):
         users = {
             "token-a": {
@@ -322,6 +367,14 @@ class ServerTestCase(unittest.TestCase):
 
             with self.assertRaises(urllib.error.HTTPError) as cm:
                 self.get_json(base + f"/api/send-tasks/{task_id}", token="token-b")
+            self.assertEqual(cm.exception.code, 404)
+
+            with self.assertRaises(urllib.error.HTTPError) as cm:
+                self.post_json(
+                    base + f"/api/send-tasks/{task_id}/claim-next",
+                    {},
+                    token="token-b",
+                )
             self.assertEqual(cm.exception.code, 404)
         finally:
             self.stop_server(httpd)

@@ -421,6 +421,69 @@ class Storage:
         task["items"] = [row_to_send_task_item(row) for row in rows]
         return task
 
+    def claim_next_send_task_item(
+        self,
+        owner_key: str,
+        task_id: str,
+        worker_id: str = "",
+    ) -> dict[str, Any] | None:
+        now = now_iso()
+        with closing(self._connect()) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            task = self._get_send_task_summary(conn, owner_key, task_id)
+            if task is None:
+                conn.rollback()
+                return None
+
+            item = conn.execute(
+                """
+                select id, task_id, scrape_batch_id, customer_index, customer_json,
+                       status, created_at, updated_at, result_json, last_error
+                from send_task_items
+                where owner_key = ? and task_id = ? and status = 'pending'
+                order by customer_index asc
+                limit 1
+                """,
+                (owner_key, task_id),
+            ).fetchone()
+            if item is None:
+                self._refresh_send_task_counts(conn, owner_key, task_id, now)
+                task = self._get_send_task_summary(conn, owner_key, task_id)
+                conn.commit()
+                return {"item": None, "task": task}
+
+            result = {"claimed_at": now}
+            if worker_id:
+                result["worker_id"] = worker_id
+            conn.execute(
+                """
+                update send_task_items
+                set status = 'in_progress', updated_at = ?, result_json = ?
+                where owner_key = ? and id = ? and status = 'pending'
+                """,
+                (
+                    now,
+                    json.dumps(result, ensure_ascii=False),
+                    owner_key,
+                    item["id"],
+                ),
+            )
+            self._refresh_send_task_counts(conn, owner_key, task_id, now)
+            claimed = conn.execute(
+                """
+                select id, task_id, scrape_batch_id, customer_index, customer_json,
+                       status, created_at, updated_at, result_json, last_error
+                from send_task_items
+                where owner_key = ? and id = ?
+                """,
+                (owner_key, item["id"]),
+            ).fetchone()
+            task = self._get_send_task_summary(conn, owner_key, task_id)
+            conn.commit()
+        if claimed is None or task is None:
+            return None
+        return {"item": row_to_send_task_item(claimed), "task": task}
+
     def update_send_task_item_result(
         self,
         owner_key: str,
@@ -513,10 +576,13 @@ class Storage:
         success_count = counts.get("success", 0)
         failed_count = counts.get("failed", 0)
         skipped_count = counts.get("skipped", 0)
-        pending_count = max(item_count - success_count - failed_count - skipped_count, 0)
+        in_progress_count = counts.get("in_progress", 0)
+        pending_count = counts.get("pending", 0)
         if item_count == 0:
             task_status = "empty"
-        elif pending_count > 0 and (success_count or failed_count or skipped_count):
+        elif pending_count > 0 and (success_count or failed_count or skipped_count or in_progress_count):
+            task_status = "in_progress"
+        elif in_progress_count > 0:
             task_status = "in_progress"
         elif pending_count > 0:
             task_status = "pending"
@@ -581,6 +647,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/send-tasks":
             self.handle_create_send_task()
+            return
+        if parsed.path.startswith("/api/send-tasks/") and parsed.path.endswith("/claim-next"):
+            raw_task_id = parsed.path.removeprefix("/api/send-tasks/").removesuffix("/claim-next")
+            self.handle_claim_next_send_task_item(raw_task_id)
             return
         if parsed.path.startswith("/api/send-task-items/") and parsed.path.endswith("/result"):
             raw_item_id = parsed.path.removeprefix("/api/send-task-items/").removesuffix("/result")
@@ -706,6 +776,29 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return
         self.send_json({"ok": True, "task": task})
 
+    def handle_claim_next_send_task_item(self, raw_task_id: str) -> None:
+        ctx = self.require_user()
+        if ctx is None:
+            return
+        task_id = urllib.parse.unquote(raw_task_id).strip("/")
+        if not task_id:
+            self.send_json({"error": "missing task id"}, HTTPStatus.BAD_REQUEST)
+            return
+        body = self.read_optional_json_body()
+        if body is None:
+            return
+        worker_id = str(body.get("worker_id") or "").strip()
+        self.server.storage.touch_user(ctx["owner_key"], ctx["user"])  # type: ignore[attr-defined]
+        claimed = self.server.storage.claim_next_send_task_item(  # type: ignore[attr-defined]
+            ctx["owner_key"],
+            task_id,
+            worker_id,
+        )
+        if claimed is None:
+            self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+            return
+        self.send_json({"ok": True, **claimed})
+
     def handle_update_send_task_item_result(self, raw_item_id: str) -> None:
         ctx = self.require_user()
         if ctx is None:
@@ -768,6 +861,28 @@ class BridgeHandler(BaseHTTPRequestHandler):
         if length <= 0:
             self.send_json({"error": "missing JSON body"}, HTTPStatus.BAD_REQUEST)
             return None
+        if length > 20 * 1024 * 1024:
+            self.send_json({"error": "request body too large"}, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+            return None
+        try:
+            data = json.loads(self.rfile.read(length).decode("utf-8"))
+        except Exception:
+            self.send_json({"error": "invalid JSON body"}, HTTPStatus.BAD_REQUEST)
+            return None
+        if not isinstance(data, dict):
+            self.send_json({"error": "JSON body must be an object"}, HTTPStatus.BAD_REQUEST)
+            return None
+        return data
+
+    def read_optional_json_body(self) -> dict[str, Any] | None:
+        length_raw = self.headers.get("Content-Length") or "0"
+        try:
+            length = int(length_raw)
+        except ValueError:
+            self.send_json({"error": "invalid content length"}, HTTPStatus.BAD_REQUEST)
+            return None
+        if length <= 0:
+            return {}
         if length > 20 * 1024 * 1024:
             self.send_json({"error": "request body too large"}, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
             return None

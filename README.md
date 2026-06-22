@@ -50,6 +50,7 @@ GET  /api/scrape-batches/:id  # 查看当前用户自己的某个抓取批次
 POST /api/send-tasks          # 从当前用户自己的抓取批次生成发送任务
 GET  /api/send-tasks          # 列出当前用户自己的发送任务
 GET  /api/send-tasks/:id      # 查看发送任务与任务项
+POST /api/send-tasks/:id/claim-next  # 领取当前用户自己的下一条待发送任务项
 POST /api/send-task-items/:id/result  # 回写单条任务项发送结果
 ```
 
@@ -75,7 +76,8 @@ agent 分析结果都必须按这个 `owner_key` 写入和查询。
 ```
 
 服务端会确认该批次属于当前登录用户，再把批次里的客户展开为
-`send_task_items`。手机/安卓发送器后续可以拉取任务详情，逐条发送后调用
+`send_task_items`。手机/安卓发送器后续可以列出任务、打开任务、调用
+`/api/send-tasks/:id/claim-next` 领取下一条待发送客户，发送完成后调用
 `/api/send-task-items/:id/result` 回写 `success`、`failed`、`skipped` 或
 `pending`。
 

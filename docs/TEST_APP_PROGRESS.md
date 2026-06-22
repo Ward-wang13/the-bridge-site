@@ -20,12 +20,13 @@ download/update app.
 - Production domain: `https://thebridge.tae.vera-mesh.com`
 - Production image:
   `registry.pixcakeai.com/tae/the-bridge-site:data-static-202606111538`
-- Isolated test API app: `thebridge-api-ward`
-- Test API domain: `https://thebridge-api-ward.tae.vera-mesh.com`
+- Isolated test API app: `thebridgesite`
+- Test API domain: `https://thebridgesite.tae.vera-mesh.com`
 - Test API image:
-  `registry.pixcakeai.com/tae/the-bridge-site:20260622165634`
+  `registry.pixcakeai.com/tae/the-bridge-site:20260622185334`
 - Test API storage: `10Gi` mounted at `/data`
-- Test API database path: `/data/thebridge/cloud/thebridge.db`
+- Test API app data root: `/data/thebridgesite`
+- Test API database path: `/data/thebridgesite/cloud/thebridge.db`
 
 ## Production Boundary
 
@@ -82,6 +83,7 @@ In `/Users/ward/for_claude/the-bridge-site/server.py`:
 - `POST /api/send-tasks`
 - `GET /api/send-tasks`
 - `GET /api/send-tasks/:id`
+- `POST /api/send-tasks/:id/claim-next`
 - `POST /api/send-task-items/:id/result`
 
 User-data endpoints require a bearer token. The server derives `owner_key` from
@@ -90,7 +92,20 @@ the token and only reads/writes rows for the current user.
 Send tasks are generated from an existing scrape batch that belongs to the
 current user. The service expands the batch's `customers` array into
 `send_task_items`, one pending item per customer. A mobile/Android sender can
-pull a task detail, send each item, and write back item status with result data.
+list tasks, open a task, claim the next pending item, send it, and write back
+item status with result data.
+
+Mobile sender flow:
+
+1. Login with auth-gateway and keep the bearer token.
+2. Call `GET /api/send-tasks` to list the current user's tasks.
+3. Call `GET /api/send-tasks/:id` to inspect a task if needed.
+4. Call `POST /api/send-tasks/:id/claim-next` with optional
+   `{ "worker_id": "android-device-id" }`.
+5. If the response has `item: null`, the task has no pending work.
+6. Send the returned item through the mobile sender.
+7. Call `POST /api/send-task-items/:id/result` with `success`, `failed`,
+   `skipped`, or `pending`.
 
 Site tests:
 
@@ -99,7 +114,7 @@ cd /Users/ward/for_claude/the-bridge-site
 python3 -W error::ResourceWarning -m unittest -v tests.test_server
 ```
 
-Last known result: `13 tests OK`.
+Last known result: `14 tests OK`.
 
 ## Implemented Desktop Upload
 
@@ -110,10 +125,10 @@ In `/Users/ward/for_claude/the-bridge`:
   - `src/cloud/__init__.py`
 - Added config key:
   `cloud_api_base_url`
-- Added desktop API method:
-  `Api.upload_current_scrape_batch()`
-- Added scraper page button:
-  `上传云端`
+- Added desktop API methods for upload and cloud task creation/list/detail.
+- Added scraper page cloud task panel:
+  - Button: `生成云端任务`
+  - Panel title: `云端发送任务`
 - Upload removes local-only UI/cooldown fields.
 - Upload keeps classification fields:
   - `category_id`
@@ -127,14 +142,14 @@ cd /Users/ward/for_claude/the-bridge
 ./venv/bin/python -m pytest -q
 ```
 
-Last known result: `247 passed`.
+Last known result: `249 passed`.
 
 ## Local Desktop Test Configuration
 
 The local desktop source run should point to the isolated test API app:
 
 ```text
-cloud_api_base_url = https://thebridge-api-ward.tae.vera-mesh.com
+cloud_api_base_url = https://thebridgesite.tae.vera-mesh.com
 ```
 
 Current local config path:
@@ -151,7 +166,7 @@ cd /Users/ward/for_claude/the-bridge
 from src.config.manager import ConfigManager
 mgr = ConfigManager()
 mgr.save_config({
-    "cloud_api_base_url": "https://thebridge-api-ward.tae.vera-mesh.com",
+    "cloud_api_base_url": "https://thebridgesite.tae.vera-mesh.com",
 })
 print(mgr.load_config().get("cloud_api_base_url"))
 PY
@@ -163,13 +178,21 @@ API domain.
 
 User-confirmed state: upload to the test API app has succeeded.
 
+Real desktop upload smoke:
+
+- Uploaded customer count: `281`
+- Generated send task:
+  `acf9e40b2f7946709b548f16f3dbd18e`
+- Task item count: `281`
+- Pending count after creation: `281`
+
 ## Git State To Preserve
 
 Desktop repo:
 
 - Branch: `feature/explore`
 - Pushed commit:
-  `9a84478 feat: upload scrape batches to cloud API`
+  `11f42d6 feat: add desktop cloud task panel`
 - Pushed to:
   - `origin feature/explore`
   - `backup feature/explore`
@@ -180,6 +203,7 @@ Site/API repo:
 - Pushed commits:
   - `535f096 feat: add authenticated cloud API for scrape batches`
   - `66f3e0d fix: use supported internal python base image`
+  - `d56b05f feat: add send task queue API`
 
 Design doc:
 
@@ -216,26 +240,23 @@ ts-skill use tae-app-manager
 
 ## Next Recommended Work
 
-1. Add desktop "view cloud batches" support.
-   - Cloud client method for `GET /api/scrape-batches`
-   - Desktop API method such as `list_cloud_scrape_batches()`
-   - UI button/panel to confirm the logged-in user only sees their own uploads
+1. Finish and deploy mobile/Android sender consumption API.
+   - Commit `POST /api/send-tasks/:id/claim-next`
+   - Deploy only to test app `thebridgesite`
+   - Smoke test `claim-next` with the real desktop-created task
 
-2. Add desktop batch detail inspection.
-   - Use `GET /api/scrape-batches/:id`
-   - Show uploaded item count and sanitized payload details
-
-3. Add mobile/Android sender consumption.
+2. Add mobile/Android sender client.
    - Authenticate with auth-gateway
    - Pull `GET /api/send-tasks`
    - Open `GET /api/send-tasks/:id`
-   - Send each `send_task_items[]` entry
+   - Claim work with `POST /api/send-tasks/:id/claim-next`
+   - Send the claimed item
    - Write result through `POST /api/send-task-items/:id/result`
 
-4. Add real-token smoke testing if possible.
+3. Add real-token isolation smoke testing if possible.
    - Verify `/api/me`
-   - Verify upload/list/detail with the same login
-   - Verify a second user cannot see the first user's batches
+   - Verify task list/detail with the same login
+   - Verify a second user cannot see or claim the first user's tasks
 
 ## Hard Constraints
 
