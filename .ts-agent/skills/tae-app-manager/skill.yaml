@@ -1,0 +1,42 @@
+id: tae-app-manager
+name: TAE App Manager
+version: 0.1.1
+status: active
+summary: 通过 TAE API 管理 K8s 应用、数据库以及 Git 仓库。
+owners:
+  - platform
+domains:
+  - tae
+  - deployment
+intent_signals:
+  - TAE 应用管理
+  - TAE 部署
+  - TAE 数据库
+  - TAE Git 仓库
+entrypoints:
+  required:
+    - SKILL.md
+  optional:
+    - evals/evals.json
+  cli: []
+requirements:
+  runtime:
+    - curl
+    - git
+  services:
+    - TAE API
+  files: []
+safety:
+  review_required: false
+  constraints:
+    - 不打印完整 TAE_API_KEY
+    - 更新应用前先读取当前配置并保留回滚信息
+outputs:
+  artifacts:
+    - TAE 应用、数据库或 Git 仓库变更结果
+  contract:
+    stdout: 操作摘要、状态检查和明确 blocker
+    files: []
+    exit_codes:
+      "0": 操作完成或查询成功
+      "1": 缺少凭据、接口失败或部署未就绪

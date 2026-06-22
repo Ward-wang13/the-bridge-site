@@ -1,0 +1,12 @@
+{
+  "evals": [
+    {
+      "prompt": "帮我查看 TAE 应用 skill 的运行状态",
+      "expected_output": "检查 TAE_API_KEY，获取 OpenAPI 文档，然后调用应用查询接口并汇总应用状态、镜像、Pod 就绪情况。"
+    },
+    {
+      "prompt": "把 TAE 应用 skill 更新到新镜像并确认部署成功",
+      "expected_output": "先读取当前应用配置，PUT 更新镜像，随后轮询应用状态、Pod readiness 和事件日志，确认运行成功或报告明确 blocker。"
+    }
+  ]
+}

@@ -1,0 +1,43 @@
+# Version control
+.git
+.gitignore
+.gitattributes
+.github
+.gitlab-ci.yml
+
+# IDE / editor / system
+.claude
+.idea
+.vscode
+.cursor
+.DS_Store
+Thumbs.db
+*.swp
+
+# Logs
+*.log
+logs
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Build outputs / caches
+dist
+build
+out
+coverage
+.cache
+.parcel-cache
+.vite
+
+# Runtime assets mounted from TAE /data, not baked into the image
+resources
+updates
+
+# Local TS Skill Platform bridges / registry
+.codex
+.ts-agent

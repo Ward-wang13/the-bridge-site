@@ -1,0 +1,23 @@
+{
+  "skill_name": "tae-image-release",
+  "evals": [
+    {
+      "id": "default-timestamp-tag",
+      "prompt": "帮我把当前仓库打成镜像发布到 TAE，我没有指定 tag。",
+      "expected_output": "应使用 publish-image.sh 发布镜像；未显式传 tag 时默认生成 YYYYMMDDHHMMSS 时间戳 tag，不额外推送 latest。",
+      "files": []
+    },
+    {
+      "id": "explicit-custom-tag",
+      "prompt": "帮我发布镜像，tag 用 v1.2.3。",
+      "expected_output": "应接受用户显式提供的 Docker tag，不强制改成 YYYYMMDDHHMMSS；仅校验 Docker tag 格式。",
+      "files": []
+    },
+    {
+      "id": "reject-invalid-tag",
+      "prompt": "帮我发布镜像，tag 用 bad/tag。",
+      "expected_output": "应拒绝包含斜杠的非法 Docker tag，并提示镜像 tag 格式不合法。",
+      "files": []
+    }
+  ]
+}

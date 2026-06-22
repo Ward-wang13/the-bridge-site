@@ -1,0 +1,41 @@
+id: tae-image-release
+name: TAE Image Release
+version: 0.2.2
+status: active
+summary: 面向 IT 小白的 TAE 镜像零配置发布与部署技能。本地有 Docker 直接构建，无 Docker 自动 SSH 到远端 ECS 构建，无需安装任何软件、无需 sudo。自动完成 registry 登录，Dockerfile 基础镜像强制使用 registry.pixcakeai.com/pub/ 内部源。镜像推送成功后自动调用 tae-app-manager skill 完成应用创建或更新，并执行健康检查。用户只需一条命令即可完成从镜像构建到应用部署的全流程。
+owners:
+  - web-platform/tools/skill
+domains:
+  - deployment
+  - automation
+  - operations
+intent_signals:
+  - 帮我把这个仓库打成 amd64 镜像并推到 tae 仓库
+  - 我电脑没有 docker 怎么发布镜像
+  - 把这个项目构建成镜像发布到 TAE
+  - 检查 Dockerfile 是否符合国内源规范并发布镜像
+  - 把 TAE 部署页要填的内容按表单顺序整理给我
+  - 零基础发布一个 docker 镜像到 tae
+  - 帮我构建镜像并部署到 TAE
+  - 一键发布并部署应用
+  - 构建完镜像直接帮我部署上去
+  - 镜像太大了，node_modules 被打进去了，帮我修一下 .dockerignore
+  - 帮我检查 Dockerfile 和 .dockerignore 是否规范
+entrypoints:
+  required:
+    - SKILL.md
+  optional:
+    - scripts/publish-image.sh
+    - references/dockerfile-mirror-rules.md
+    - references/dockerignore-rules.md
+requirements:
+  runtime: []
+  services: []
+  files: []
+safety:
+  review_required: false
+  constraints:
+    - 未传 tag 时默认生成 YYYYMMDDHHMMSS；显式 tag 不强制时间戳，仅校验 Docker tag 格式；不额外推送 latest 别名
+outputs:
+  artifacts: []
+notes: []
