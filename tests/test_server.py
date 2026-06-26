@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import base64
 import tempfile
 import threading
 import unittest
@@ -67,6 +69,14 @@ class ServerTestCase(unittest.TestCase):
         with urllib.request.urlopen(req, timeout=5) as resp:
             return resp.status, json.loads(resp.read().decode("utf-8"))
 
+    def get_bytes(self, url, token=None):
+        headers = {}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return resp.status, resp.headers, resp.read()
+
     def post_json(self, url, payload, token=None):
         body = json.dumps(payload).encode("utf-8")
         headers = {"Content-Type": "application/json"}
@@ -98,6 +108,81 @@ class ServerTestCase(unittest.TestCase):
             self.assertEqual(cm.exception.code, 401)
             body = json.loads(cm.exception.read().decode("utf-8"))
             self.assertEqual(body["error"], "missing bearer token")
+        finally:
+            self.stop_server(httpd)
+
+    def test_create_and_download_mobile_asset_with_device_token(self):
+        httpd, base = self.run_server(StubAuthClient())
+        try:
+            image_bytes = b"\x89PNG\r\n\x1a\nbridge-image"
+            status, created = self.post_json(
+                base + "/api/mobile-assets",
+                {
+                    "filename": "welcome.png",
+                    "content_base64": base64.b64encode(image_bytes).decode("ascii"),
+                },
+                token="jwt-token",
+            )
+            self.assertEqual(status, 201)
+            asset = created["asset"]
+            self.assertEqual(asset["image_name"], "welcome.png")
+            self.assertEqual(asset["image_mime"], "image/png")
+            self.assertEqual(asset["image_sha256"], hashlib.sha256(image_bytes).hexdigest())
+            self.assertEqual(asset["size"], len(image_bytes))
+            self.assertTrue(asset["image_url"].endswith(f"/api/mobile-assets/{asset['id']}"))
+
+            _, pairing = self.post_json(
+                base + "/api/device-pairings",
+                {"device_name": "Android"},
+                token="jwt-token",
+            )
+            _, exchanged = self.post_json(
+                base + "/api/device-pairings/exchange",
+                {"code": pairing["pairing"]["code"], "device_name": "Android"},
+            )
+
+            status, headers, downloaded = self.get_bytes(
+                asset["image_url"],
+                token=exchanged["device_token"],
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(headers.get_content_type(), "image/png")
+            self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
+            self.assertEqual(downloaded, image_bytes)
+        finally:
+            self.stop_server(httpd)
+
+    def test_mobile_assets_are_isolated_by_owner_key(self):
+        users = {
+            "token-a": {
+                "email": "a@example.com",
+                "name": "A",
+                "provider": "corp",
+                "org_id": "org",
+                "union_id": "user-a",
+            },
+            "token-b": {
+                "email": "b@example.com",
+                "name": "B",
+                "provider": "corp",
+                "org_id": "org",
+                "union_id": "user-b",
+            },
+        }
+        httpd, base = self.run_server(StubAuthClient(users=users))
+        try:
+            _, created = self.post_json(
+                base + "/api/mobile-assets",
+                {
+                    "filename": "private.jpg",
+                    "content_base64": base64.b64encode(b"private-image").decode("ascii"),
+                },
+                token="token-a",
+            )
+
+            with self.assertRaises(urllib.error.HTTPError) as cm:
+                self.get_bytes(created["asset"]["image_url"], token="token-b")
+            self.assertEqual(cm.exception.code, 404)
         finally:
             self.stop_server(httpd)
 

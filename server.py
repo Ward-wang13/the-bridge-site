@@ -9,6 +9,7 @@ validation and derive ownership on the server side.
 from __future__ import annotations
 
 import json
+import base64
 import hashlib
 import mimetypes
 import os
@@ -42,6 +43,15 @@ OWNER_FALLBACK_KEYS = ("union_id", "email", "sub", "id")
 DATA_SUBDIRS = ("resources", "updates", "cloud")
 DEVICE_TOKEN_PREFIX = "tbdev_"
 PAIRING_CODE_TTL_SECONDS = int(os.environ.get("PAIRING_CODE_TTL_SECONDS", "600"))
+MOBILE_ASSET_MAX_BYTES = int(os.environ.get("MOBILE_ASSET_MAX_BYTES", str(10 * 1024 * 1024)))
+MOBILE_ASSET_MIME_BY_EXT = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+}
 
 
 def ensure_data_directories(data_root: Path = DATA_ROOT) -> None:
@@ -135,7 +145,10 @@ class Storage:
     def __init__(self, db_path: Path = DB_PATH, data_root: Path | None = None):
         self.db_path = db_path
         root = data_root or (DATA_ROOT if db_path == DB_PATH else db_path.parent)
+        self.data_root = root
+        self.mobile_assets_dir = root / "cloud" / "mobile-assets"
         ensure_data_directories(root)
+        self.mobile_assets_dir.mkdir(parents=True, exist_ok=True)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
 
@@ -244,6 +257,20 @@ class Storage:
 
                 create index if not exists idx_device_tokens_owner
                   on device_tokens(owner_key, created_at desc);
+
+                create table if not exists mobile_assets(
+                  id text primary key,
+                  owner_key text not null,
+                  filename text not null,
+                  mime text not null,
+                  sha256 text not null,
+                  size integer not null,
+                  created_at text not null,
+                  rel_path text not null
+                );
+
+                create index if not exists idx_mobile_assets_owner_created
+                  on mobile_assets(owner_key, created_at desc);
                 """
             )
             conn.commit()
@@ -695,6 +722,67 @@ class Storage:
             "device_id": row["device_id"],
         }
 
+    def create_mobile_asset(
+        self,
+        owner_key: str,
+        filename: str,
+        mime: str,
+        content: bytes,
+    ) -> dict[str, Any]:
+        asset_id = uuid.uuid4().hex
+        ext = Path(filename).suffix.lower()
+        stored_name = f"{asset_id}{ext}"
+        rel_path = f"cloud/mobile-assets/{stored_name}"
+        asset_path = self.data_root / rel_path
+        digest = hashlib.sha256(content).hexdigest()
+        now = now_iso()
+        asset_path.write_bytes(content)
+        asset = {
+            "id": asset_id,
+            "owner_key": owner_key,
+            "filename": filename,
+            "mime": mime,
+            "sha256": digest,
+            "size": len(content),
+            "created_at": now,
+            "rel_path": rel_path,
+        }
+        with closing(self._connect()) as conn:
+            conn.execute(
+                """
+                insert into mobile_assets(
+                  id, owner_key, filename, mime, sha256, size, created_at, rel_path
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    asset["id"],
+                    owner_key,
+                    filename,
+                    mime,
+                    digest,
+                    len(content),
+                    now,
+                    rel_path,
+                ),
+            )
+            conn.commit()
+        return asset
+
+    def get_mobile_asset(self, owner_key: str, asset_id: str) -> dict[str, Any] | None:
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                """
+                select id, owner_key, filename, mime, sha256, size, created_at, rel_path
+                from mobile_assets
+                where owner_key = ? and id = ?
+                """,
+                (owner_key, asset_id),
+            ).fetchone()
+        if row is None:
+            return None
+        return row_to_mobile_asset(row)
+
     def _get_send_task_summary(
         self,
         conn: sqlite3.Connection,
@@ -795,6 +883,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
         if parsed.path.startswith("/api/send-tasks/"):
             self.handle_get_send_task(parsed.path.removeprefix("/api/send-tasks/"))
             return
+        if parsed.path.startswith("/api/mobile-assets/"):
+            self.handle_get_mobile_asset(parsed.path.removeprefix("/api/mobile-assets/"))
+            return
         if parsed.path.startswith("/api/"):
             self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
             return
@@ -813,6 +904,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/send-tasks":
             self.handle_create_send_task()
+            return
+        if parsed.path == "/api/mobile-assets":
+            self.handle_create_mobile_asset()
             return
         if parsed.path.startswith("/api/send-tasks/") and parsed.path.endswith("/claim-next"):
             raw_task_id = parsed.path.removeprefix("/api/send-tasks/").removesuffix("/claim-next")
@@ -1001,6 +1095,77 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return
         self.send_json({"ok": True, **updated})
 
+    def handle_create_mobile_asset(self) -> None:
+        ctx = self.require_user()
+        if ctx is None:
+            return
+        body = self.read_json_body()
+        if body is None:
+            return
+        filename = sanitize_mobile_asset_filename(str(body.get("filename") or ""))
+        if not filename:
+            self.send_json({"error": "filename is required"}, HTTPStatus.BAD_REQUEST)
+            return
+        ext = Path(filename).suffix.lower()
+        mime = MOBILE_ASSET_MIME_BY_EXT.get(ext)
+        if not mime:
+            self.send_json({"error": "unsupported image type"}, HTTPStatus.BAD_REQUEST)
+            return
+        content_base64 = str(body.get("content_base64") or "")
+        if not content_base64:
+            self.send_json({"error": "content_base64 is required"}, HTTPStatus.BAD_REQUEST)
+            return
+        try:
+            content = base64.b64decode(content_base64, validate=True)
+        except Exception:
+            self.send_json({"error": "invalid content_base64"}, HTTPStatus.BAD_REQUEST)
+            return
+        if not content:
+            self.send_json({"error": "image content is empty"}, HTTPStatus.BAD_REQUEST)
+            return
+        if len(content) > MOBILE_ASSET_MAX_BYTES:
+            self.send_json({"error": "image content too large"}, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+            return
+        self.server.storage.touch_user(ctx["owner_key"], ctx["user"])  # type: ignore[attr-defined]
+        asset = self.server.storage.create_mobile_asset(  # type: ignore[attr-defined]
+            ctx["owner_key"],
+            filename,
+            mime,
+            content,
+        )
+        self.send_json(
+            {"ok": True, "asset": public_mobile_asset(asset, self.public_api_base_url())},
+            HTTPStatus.CREATED,
+        )
+
+    def handle_get_mobile_asset(self, raw_asset_id: str) -> None:
+        ctx = self.require_task_consumer()
+        if ctx is None:
+            return
+        asset_id = urllib.parse.unquote(raw_asset_id).strip("/")
+        if not asset_id:
+            self.send_json({"error": "missing asset id"}, HTTPStatus.BAD_REQUEST)
+            return
+        asset = self.server.storage.get_mobile_asset(ctx["owner_key"], asset_id)  # type: ignore[attr-defined]
+        if asset is None:
+            self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+            return
+        asset_path = (self.server.storage.data_root / asset["rel_path"]).resolve()  # type: ignore[attr-defined]
+        try:
+            asset_path.relative_to(self.server.storage.data_root.resolve())  # type: ignore[attr-defined]
+            content = asset_path.read_bytes()
+        except (OSError, ValueError):
+            self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+            return
+
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", asset["mime"])
+        self.send_header("Content-Length", str(len(content)))
+        self.send_header("Cache-Control", "private, max-age=300")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(content)
+
     def handle_create_device_pairing(self) -> None:
         ctx = self.require_user()
         if ctx is None:
@@ -1173,6 +1338,11 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(content)
 
+    def public_api_base_url(self) -> str:
+        proto = (self.headers.get("X-Forwarded-Proto") or "http").split(",")[0].strip() or "http"
+        host = self.headers.get("Host") or f"{self.server.server_name}:{self.server.server_port}"
+        return f"{proto}://{host}"
+
     def log_message(self, fmt: str, *args: Any) -> None:
         # Avoid logging Authorization headers or auth codes; keep default access
         # log compact enough for TAE diagnostics.
@@ -1188,6 +1358,23 @@ def safe_join(base_dir: Path, rel_path: str) -> Path | None:
     except ValueError:
         return None
     return candidate
+
+
+def sanitize_mobile_asset_filename(value: str) -> str:
+    filename = Path(value.strip()).name
+    if not filename or filename in {".", ".."}:
+        return ""
+    stem = Path(filename).stem.strip()
+    ext = Path(filename).suffix.lower()
+    if not stem or ext not in MOBILE_ASSET_MIME_BY_EXT:
+        return ""
+    safe_chars = []
+    for ch in stem[:80]:
+        safe_chars.append(ch if ch.isalnum() or ch in {"-", "_", "."} else "_")
+    safe_stem = "".join(safe_chars).strip("._")
+    if not safe_stem:
+        safe_stem = "image"
+    return f"{safe_stem}{ext}"
 
 
 class BridgeHTTPServer(ThreadingHTTPServer):
@@ -1258,6 +1445,31 @@ def row_to_send_task_item(row: sqlite3.Row) -> dict[str, Any]:
         "updated_at": row["updated_at"],
         "result": json.loads(row["result_json"] or "{}"),
         "last_error": row["last_error"],
+    }
+
+
+def row_to_mobile_asset(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "owner_key": row["owner_key"],
+        "filename": row["filename"],
+        "mime": row["mime"],
+        "sha256": row["sha256"],
+        "size": row["size"],
+        "created_at": row["created_at"],
+        "rel_path": row["rel_path"],
+    }
+
+
+def public_mobile_asset(asset: dict[str, Any], base_url: str) -> dict[str, Any]:
+    return {
+        "id": asset["id"],
+        "image_url": f"{base_url}/api/mobile-assets/{asset['id']}",
+        "image_name": asset["filename"],
+        "image_mime": asset["mime"],
+        "image_sha256": asset["sha256"],
+        "size": asset["size"],
+        "created_at": asset["created_at"],
     }
 
 
