@@ -263,9 +263,6 @@ class Storage:
                 create index if not exists idx_device_tokens_owner
                   on device_tokens(owner_key, created_at desc);
 
-                create unique index if not exists idx_device_tokens_public_id
-                  on device_tokens(id);
-
                 create table if not exists mobile_assets(
                   id text primary key,
                   owner_key text not null,
@@ -285,6 +282,20 @@ class Storage:
                 conn.execute("alter table device_tokens add column id text")
             except sqlite3.OperationalError:
                 pass
+            rows = conn.execute(
+                "select token_hash from device_tokens where id is null or id = ''"
+            ).fetchall()
+            for row in rows:
+                conn.execute(
+                    "update device_tokens set id = ? where token_hash = ?",
+                    (new_device_public_id(), row["token_hash"]),
+                )
+            conn.execute(
+                """
+                create unique index if not exists idx_device_tokens_public_id
+                  on device_tokens(id)
+                """
+            )
             conn.commit()
 
     def touch_user(self, owner_key: str, user: dict[str, Any]) -> None:

@@ -100,6 +100,41 @@ class ServerTestCase(unittest.TestCase):
         owner = bridge_server.derive_owner_key({"org_id": "org", "email": "u@example.com"})
         self.assertEqual(owner, "org:email:u@example.com")
 
+    def test_storage_migrates_legacy_device_tokens_without_public_id(self):
+        db_path = Path(self.tmpdir.name) / "legacy.db"
+        with bridge_server.sqlite3.connect(db_path) as conn:
+            conn.executescript(
+                """
+                create table device_tokens(
+                  token_hash text primary key,
+                  owner_key text not null,
+                  device_name text not null,
+                  device_id text not null,
+                  created_at text not null,
+                  last_seen_at text not null,
+                  revoked_at text
+                );
+                insert into device_tokens(
+                  token_hash, owner_key, device_name, device_id,
+                  created_at, last_seen_at, revoked_at
+                ) values (
+                  'hash-1', 'org:user', 'Android', 'android-1',
+                  '2026-06-01T00:00:00+00:00', '2026-06-01T00:00:00+00:00', null
+                );
+                """
+            )
+
+        storage = bridge_server.Storage(db_path)
+        devices = storage.list_device_tokens("org:user")
+
+        self.assertEqual(len(devices), 1)
+        self.assertTrue(devices[0]["id"].startswith("dev_"))
+        with bridge_server.sqlite3.connect(db_path) as conn:
+            columns = [row[1] for row in conn.execute("pragma table_info(device_tokens)")]
+            indexes = [row[1] for row in conn.execute("pragma index_list(device_tokens)")]
+        self.assertIn("id", columns)
+        self.assertIn("idx_device_tokens_public_id", indexes)
+
     def test_api_me_requires_bearer_token(self):
         httpd, base = self.run_server(StubAuthClient())
         try:
