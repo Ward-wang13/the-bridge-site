@@ -320,6 +320,20 @@ class Storage:
             )
             conn.commit()
 
+    def user_for_owner_key(self, owner_key: str) -> dict[str, Any]:
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                "select user_json from users where owner_key = ?",
+                (owner_key,),
+            ).fetchone()
+        if row is None:
+            return {}
+        try:
+            user = json.loads(row["user_json"] or "{}")
+        except json.JSONDecodeError:
+            return {}
+        return user if isinstance(user, dict) else {}
+
     def create_scrape_batch(
         self,
         owner_key: str,
@@ -1282,10 +1296,12 @@ class BridgeHandler(BaseHTTPRequestHandler):
         if exchanged is None:
             self.send_json({"error": "invalid or expired pairing code"}, HTTPStatus.UNAUTHORIZED)
             return
+        paired_user = self.server.storage.user_for_owner_key(exchanged["owner_key"])  # type: ignore[attr-defined]
         self.send_json({
             "ok": True,
             "device_token": exchanged["device_token"],
             "device_name": exchanged["device_name"],
+            "paired_user": public_user(paired_user),
         })
 
     def handle_list_devices(self) -> None:

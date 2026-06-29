@@ -436,6 +436,8 @@ class ServerTestCase(unittest.TestCase):
             self.assertEqual(status, 200)
             device_token = exchanged["device_token"]
             self.assertTrue(device_token.startswith(bridge_server.DEVICE_TOKEN_PREFIX))
+            self.assertEqual(exchanged["paired_user"]["name"], "User")
+            self.assertEqual(exchanged["paired_user"]["email"], "u@example.com")
 
             status, listed = self.get_json(base + "/api/send-tasks", token=device_token)
             self.assertEqual(status, 200)
