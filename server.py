@@ -116,6 +116,10 @@ def format_pairing_code(value: str) -> str:
     return f"{clean[:3]}-{clean[3:]}" if len(clean) == 6 else clean
 
 
+def new_device_public_id() -> str:
+    return "dev_" + secrets.token_urlsafe(12)
+
+
 class AuthGatewayClient:
     def __init__(self, base_url: str = AUTH_GATEWAY_BASE_URL, timeout: float = AUTH_USERINFO_TIMEOUT):
         self.base_url = base_url.rstrip("/")
@@ -247,6 +251,7 @@ class Storage:
 
                 create table if not exists device_tokens(
                   token_hash text primary key,
+                  id text,
                   owner_key text not null,
                   device_name text not null,
                   device_id text not null,
@@ -257,6 +262,9 @@ class Storage:
 
                 create index if not exists idx_device_tokens_owner
                   on device_tokens(owner_key, created_at desc);
+
+                create unique index if not exists idx_device_tokens_public_id
+                  on device_tokens(id);
 
                 create table if not exists mobile_assets(
                   id text primary key,
@@ -273,6 +281,10 @@ class Storage:
                   on mobile_assets(owner_key, created_at desc);
                 """
             )
+            try:
+                conn.execute("alter table device_tokens add column id text")
+            except sqlite3.OperationalError:
+                pass
             conn.commit()
 
     def touch_user(self, owner_key: str, user: dict[str, Any]) -> None:
@@ -653,6 +665,7 @@ class Storage:
         now_epoch = int(time.time())
         token = DEVICE_TOKEN_PREFIX + secrets.token_urlsafe(32)
         token_hash = hash_secret(token)
+        device_public_id = new_device_public_id()
         clean_device_name = str(device_name or "").strip()[:80]
         clean_device_id = str(device_id or "").strip()[:120]
         with closing(self._connect()) as conn:
@@ -681,18 +694,81 @@ class Storage:
             conn.execute(
                 """
                 insert into device_tokens(
-                  token_hash, owner_key, device_name, device_id,
+                  token_hash, id, owner_key, device_name, device_id,
                   created_at, last_seen_at, revoked_at
                 )
-                values (?, ?, ?, ?, ?, ?, '')
+                values (?, ?, ?, ?, ?, ?, ?, '')
                 """,
-                (token_hash, owner_key, paired_name, clean_device_id, now, now),
+                (token_hash, device_public_id, owner_key, paired_name, clean_device_id, now, now),
             )
             conn.commit()
         return {
             "device_token": token,
             "owner_key": owner_key,
             "device_name": paired_name,
+        }
+
+    def list_device_tokens(self, owner_key: str) -> list[dict[str, Any]]:
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                """
+                select token_hash, id, device_name, device_id, created_at, last_seen_at, revoked_at
+                from device_tokens
+                where owner_key = ?
+                order by created_at desc
+                """,
+                (owner_key,),
+            ).fetchall()
+            devices: list[dict[str, Any]] = []
+            for row in rows:
+                public_id = row["id"] or new_device_public_id()
+                if not row["id"]:
+                    conn.execute(
+                        "update device_tokens set id = ? where token_hash = ?",
+                        (public_id, row["token_hash"]),
+                    )
+                devices.append({
+                    "id": public_id,
+                    "device_name": row["device_name"] or "",
+                    "device_id": row["device_id"] or "",
+                    "created_at": row["created_at"] or "",
+                    "last_seen_at": row["last_seen_at"] or "",
+                    "revoked_at": row["revoked_at"] or "",
+                })
+            conn.commit()
+        return devices
+
+    def revoke_device_token(self, owner_key: str, device_public_id: str) -> dict[str, Any] | None:
+        clean_id = str(device_public_id or "").strip()
+        if not clean_id:
+            return None
+        now = now_iso()
+        with closing(self._connect()) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """
+                select id, device_name, device_id, created_at, last_seen_at, revoked_at
+                from device_tokens
+                where owner_key = ? and id = ?
+                """,
+                (owner_key, clean_id),
+            ).fetchone()
+            if row is None:
+                conn.rollback()
+                return None
+            revoked_at = row["revoked_at"] or now
+            conn.execute(
+                "update device_tokens set revoked_at = ? where owner_key = ? and id = ?",
+                (revoked_at, owner_key, clean_id),
+            )
+            conn.commit()
+        return {
+            "id": row["id"],
+            "device_name": row["device_name"] or "",
+            "device_id": row["device_id"] or "",
+            "created_at": row["created_at"] or "",
+            "last_seen_at": row["last_seen_at"] or "",
+            "revoked_at": revoked_at,
         }
 
     def owner_key_for_device_token(self, token: str) -> dict[str, Any] | None:
@@ -871,6 +947,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/me":
             self.handle_me()
             return
+        if parsed.path == "/api/devices":
+            self.handle_list_devices()
+            return
         if parsed.path == "/api/scrape-batches":
             self.handle_list_scrape_batches()
             return
@@ -898,6 +977,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/device-pairings/exchange":
             self.handle_exchange_device_pairing()
+            return
+        if parsed.path.startswith("/api/devices/") and parsed.path.endswith("/revoke"):
+            raw_device_id = parsed.path.removeprefix("/api/devices/").removesuffix("/revoke")
+            self.handle_revoke_device(raw_device_id)
             return
         if parsed.path == "/api/scrape-batches":
             self.handle_create_scrape_batch()
@@ -1204,6 +1287,24 @@ class BridgeHandler(BaseHTTPRequestHandler):
             "device_token": exchanged["device_token"],
             "device_name": exchanged["device_name"],
         })
+
+    def handle_list_devices(self) -> None:
+        ctx = self.require_user()
+        if ctx is None:
+            return
+        devices = self.server.storage.list_device_tokens(ctx["owner_key"])  # type: ignore[attr-defined]
+        self.send_json({"ok": True, "devices": devices})
+
+    def handle_revoke_device(self, raw_device_id: str) -> None:
+        ctx = self.require_user()
+        if ctx is None:
+            return
+        device_id = urllib.parse.unquote(str(raw_device_id or "").strip())
+        device = self.server.storage.revoke_device_token(ctx["owner_key"], device_id)  # type: ignore[attr-defined]
+        if device is None:
+            self.send_json({"error": "device not found"}, HTTPStatus.NOT_FOUND)
+            return
+        self.send_json({"ok": True, "device": device})
 
     def require_user(self) -> dict[str, Any] | None:
         token = extract_bearer_token(self.headers.get("Authorization"))

@@ -488,6 +488,79 @@ class ServerTestCase(unittest.TestCase):
         finally:
             self.stop_server(httpd)
 
+    def test_user_can_list_and_revoke_paired_devices(self):
+        httpd, base = self.run_server(StubAuthClient())
+        try:
+            _, pairing = self.post_json(
+                base + "/api/device-pairings",
+                {"device_name": "测试手机"},
+                token="jwt-token",
+            )
+            _, exchanged = self.post_json(
+                base + "/api/device-pairings/exchange",
+                {
+                    "code": pairing["pairing"]["code"],
+                    "device_name": "Android",
+                    "device_id": "android-device-1",
+                },
+            )
+            device_token = exchanged["device_token"]
+
+            status, listed = self.get_json(base + "/api/devices", token="jwt-token")
+            self.assertEqual(status, 200)
+            self.assertEqual(len(listed["devices"]), 1)
+            device = listed["devices"][0]
+            self.assertTrue(device["id"].startswith("dev_"))
+            self.assertEqual(device["device_name"], "Android")
+            self.assertEqual(device["device_id"], "android-device-1")
+            self.assertTrue(device["created_at"])
+            self.assertTrue(device["last_seen_at"])
+            self.assertEqual(device["revoked_at"], "")
+
+            status, revoked = self.post_json(
+                base + f"/api/devices/{device['id']}/revoke",
+                {},
+                token="jwt-token",
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(revoked["device"]["id"], device["id"])
+            self.assertTrue(revoked["device"]["revoked_at"])
+
+            with self.assertRaises(urllib.error.HTTPError) as cm:
+                self.get_json(base + "/api/send-tasks", token=device_token)
+            self.assertEqual(cm.exception.code, 401)
+        finally:
+            self.stop_server(httpd)
+
+    def test_device_token_cannot_manage_devices_and_revoke_is_idempotent(self):
+        httpd, base = self.run_server(StubAuthClient())
+        try:
+            _, pairing = self.post_json(base + "/api/device-pairings", {}, token="jwt-token")
+            _, exchanged = self.post_json(
+                base + "/api/device-pairings/exchange",
+                {"code": pairing["pairing"]["code"], "device_name": "Android"},
+            )
+            device_token = exchanged["device_token"]
+            _, listed = self.get_json(base + "/api/devices", token="jwt-token")
+            device_id = listed["devices"][0]["id"]
+
+            with self.assertRaises(urllib.error.HTTPError) as cm:
+                self.get_json(base + "/api/devices", token=device_token)
+            self.assertEqual(cm.exception.code, 401)
+
+            with self.assertRaises(urllib.error.HTTPError) as cm:
+                self.post_json(base + f"/api/devices/{device_id}/revoke", {}, token=device_token)
+            self.assertEqual(cm.exception.code, 401)
+
+            status, first = self.post_json(base + f"/api/devices/{device_id}/revoke", {}, token="jwt-token")
+            self.assertEqual(status, 200)
+            status, second = self.post_json(base + f"/api/devices/{device_id}/revoke", {}, token="jwt-token")
+            self.assertEqual(status, 200)
+            self.assertEqual(first["device"]["id"], second["device"]["id"])
+            self.assertTrue(second["device"]["revoked_at"])
+        finally:
+            self.stop_server(httpd)
+
     def test_send_tasks_are_isolated_by_owner_key(self):
         users = {
             "token-a": {
