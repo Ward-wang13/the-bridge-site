@@ -388,6 +388,23 @@ mobile use, choose a network strategy:
 - phone joins a Wi-Fi/proxy/VPN/Vera Mesh path that can route TAE domains; or
 - expose the mobile API through a phone-reachable public ingress.
 
+Direct-network follow-up on 2026-06-30:
+
+- After the phone joined the reachable Wi-Fi/proxy/Vera Mesh path, `wlan0` was
+  up with IP `172.30.89.178`.
+- No `adb reverse` mappings were present.
+- Phone shell direct checks returned:
+  - `https://thebridgesite.tae.vera-mesh.com/api/health -> HTTP 200`
+  - `https://thebridge.tae.vera-mesh.com/updates/manifest.json -> HTTP 200`
+- Android `api_base_url` was
+  `https://thebridgesite.tae.vera-mesh.com`.
+- Pressing `刷新任务` in the Android app directly loaded 31 cloud tasks.
+
+Conclusion: real usage currently requires both desktop and Android sides to be
+on a network path that can reach Vera Mesh/TAE domains, such as the same
+Wi-Fi/proxy/VPN/Vera Mesh route. If phones should work from arbitrary public
+networks later, add a phone-reachable public API ingress.
+
 Design doc:
 
 - `/Users/ward/for_claude/the-bridge/docs/SPLIT_DELIVERY_AUTH_DATA_PLAN.md`
