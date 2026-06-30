@@ -1,6 +1,6 @@
 # The Bridge Split Delivery Test Progress
 
-Last updated: 2026-06-22
+Last updated: 2026-06-30
 
 This document records the current exploration state for direction 1:
 
@@ -15,7 +15,11 @@ download/update app.
 ## Current Environment
 
 - Desktop app repo: `/Users/ward/for_claude/the-bridge`
+- Current desktop/Android mobile worktree:
+  `/Users/ward/for_claude/the-bridge-mobile-ui`
 - Cloud API/site repo: `/Users/ward/for_claude/the-bridge-site`
+- Current permanent pairing API worktree:
+  `/Users/ward/for_claude/the-bridge-site-permanent-pairing`
 - Production TAE app: `thebridge`
 - Production domain: `https://thebridge.tae.vera-mesh.com`
 - Production image:
@@ -85,6 +89,12 @@ In `/Users/ward/for_claude/the-bridge-site/server.py`:
 - `GET /api/send-tasks/:id`
 - `POST /api/send-tasks/:id/claim-next`
 - `POST /api/send-task-items/:id/result`
+- `POST /api/mobile-assets`
+- `GET /api/mobile-assets/:id`
+- `POST /api/device-pairings`
+- `POST /api/device-pairings/exchange`
+- `GET /api/devices`
+- `POST /api/devices/:id/revoke`
 
 User-data endpoints require a bearer token. The server derives `owner_key` from
 the token and only reads/writes rows for the current user.
@@ -96,6 +106,30 @@ list tasks, open a task, claim the next pending item, send it, and write back
 item status with result data.
 
 Mobile sender flow:
+
+1. Pair once from Android using a desktop-generated pairing code.
+2. Store the returned long-lived `tbdev_` device token locally.
+3. Call `GET /api/send-tasks` to list the current user's tasks.
+4. Call `GET /api/send-tasks/:id` to inspect a task if needed.
+5. Call `POST /api/send-tasks/:id/claim-next` with optional
+   `{ "worker_id": "android-device-id" }`.
+6. If the response has `item: null`, the task has no pending work.
+7. Send the returned item through the mobile sender.
+8. Call `POST /api/send-task-items/:id/result` with `success`, `failed`,
+   `skipped`, or `pending`.
+
+Mobile device management:
+
+- Pairing codes remain short-lived and single-use.
+- The exchanged `tbdev_` token is the persistent phone binding.
+- The desktop user token can list and revoke bound phones.
+- Device tokens can consume task APIs but cannot create tasks, list devices, or
+  revoke devices.
+- Revoked device tokens receive `401`; Android clears the local binding and asks
+  the user to pair again.
+- Re-pairing the same device replaces the old active binding.
+
+Legacy flow, preserved for historical context:
 
 1. Login with auth-gateway and keep the bearer token.
 2. Call `GET /api/send-tasks` to list the current user's tasks.
@@ -114,7 +148,9 @@ cd /Users/ward/for_claude/the-bridge-site
 python3 -W error::ResourceWarning -m unittest -v tests.test_server
 ```
 
-Last known result: `14 tests OK`.
+Last known result on 2026-06-30 from
+`/Users/ward/for_claude/the-bridge-site-permanent-pairing`:
+`22 tests OK`.
 
 ## Implemented Desktop Upload
 
@@ -126,9 +162,17 @@ In `/Users/ward/for_claude/the-bridge`:
 - Added config key:
   `cloud_api_base_url`
 - Added desktop API methods for upload and cloud task creation/list/detail.
+- Added desktop API methods for mobile pairing and device management:
+  - `create_mobile_pairing_code()`
+  - `list_mobile_devices()`
+  - `revoke_mobile_device()`
 - Added scraper page cloud task panel:
   - Button: `生成云端任务`
   - Panel title: `云端发送任务`
+- Moved the phone pairing/device management UI into Settings:
+  - Generate phone pairing code.
+  - Refresh bound phones.
+  - Revoke a bound phone with confirmation.
 - Upload removes local-only UI/cooldown fields.
 - Upload keeps classification fields:
   - `category_id`
@@ -142,7 +186,19 @@ cd /Users/ward/for_claude/the-bridge
 ./venv/bin/python -m pytest -q
 ```
 
-Last known result: `249 passed`.
+Last known desktop/Android worktree targeted result on 2026-06-30:
+
+- `/Users/ward/for_claude/the-bridge/venv/bin/python -m pytest tests/test_cloud_client.py tests/test_api.py -q`
+  from `/Users/ward/for_claude/the-bridge-mobile-ui`: `44 passed`.
+- `node tests/js/test_scraper_mobile_devices.js`: passed.
+- Android API client harness:
+  `BridgeApiClientAssetDownloadTest OK`.
+- Android debug build:
+  `cd mobile/android-sender && ./gradlew :app:assembleDebug`: build successful.
+
+Note: `./gradlew :app:testDebugUnitTest` is not the current Android test entry
+point because the project uses zero-dependency `main()` Java harnesses rather
+than JUnit tests.
 
 ## Local Desktop Test Configuration
 
@@ -188,7 +244,7 @@ Real desktop upload smoke:
 
 ## Git State To Preserve
 
-Desktop repo:
+Desktop repo historical baseline:
 
 - Branch: `feature/explore`
 - Pushed commit:
@@ -197,7 +253,27 @@ Desktop repo:
   - `origin feature/explore`
   - `backup feature/explore`
 
-Site/API repo:
+Current desktop/Android mobile worktree:
+
+- Worktree:
+  `/Users/ward/for_claude/the-bridge-mobile-ui`
+- Branch:
+  `feature/android-sender-two-tab-ui`
+- Current local HEAD before the 2026-06-30 doc/update commit:
+  `6367d31 fix(desktop): place mobile pairing in settings`
+- Remote baseline:
+  `92e7945 feat(android): redesign sender app shell`
+  on `origin/feature/android-sender-two-tab-ui` and
+  `backup/feature/android-sender-two-tab-ui`.
+- Unsubmitted local changes as of this handoff:
+  - Android API diagnostic probes unauthenticated `GET /api/health` instead of
+    authenticated `GET /api/send-tasks`.
+  - `BridgeApiClientAssetDownloadTest` covers diagnostic path and header
+    behavior.
+  - `setup.py` and `scripts/pack_mac.sh` include `ui/js/auth.js` in packaged
+    desktop builds.
+
+Site/API repo historical baseline:
 
 - Branch: `main`
 - Pushed commits:
@@ -206,6 +282,22 @@ Site/API repo:
   - `d56b05f feat: add send task queue API`
   - `9945a4e feat: add send task item claiming`
   - `c4771d7 chore: tighten docker build context`
+
+Current permanent pairing API worktree:
+
+- Worktree:
+  `/Users/ward/for_claude/the-bridge-site-permanent-pairing`
+- Branch:
+  `feature/permanent-mobile-pairing`
+- Current HEAD before the 2026-06-30 doc/update commit:
+  `32371b6 fix(api): replace duplicate mobile device binding`
+- Branch contains:
+  - protected mobile image assets;
+  - device pairing API;
+  - paired user info in pairing exchange;
+  - mobile device listing/revocation;
+  - legacy device token public-id migration;
+  - same-device re-pair replacement.
 
 ## Latest Deployment Smoke
 
