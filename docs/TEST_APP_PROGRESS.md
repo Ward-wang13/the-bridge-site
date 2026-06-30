@@ -337,6 +337,39 @@ Mobile pairing smoke:
 - Android debug APK with pairing UI was installed on USB device
   `2312DRA50C`.
 
+Persistent pairing revocation smoke on 2026-06-30:
+
+- Desktop auth token was valid:
+  `GET /api/me -> 200`
+- Android debug APK from `feature/android-sender-two-tab-ui` was installed on
+  USB device `2312DRA50C` with app data preserved.
+- Existing Android device token could list tasks:
+  `GET /api/send-tasks -> 200`, visible task count `31`.
+- Active phone binding before revoke:
+  `dev_RlpucOuiV84UFAfr`
+  (`device_id = android-a66480ec7fa15931`).
+- Desktop user token revoked that phone:
+  `POST /api/devices/dev_RlpucOuiV84UFAfr/revoke -> 200`.
+- Direct phone networking to `thebridgesite.tae.vera-mesh.com:443` timed out
+  during the smoke because the phone resolved the host to `172.19.74.232`.
+  To isolate Android revocation behavior, a temporary Mac-side proxy was exposed
+  with `adb reverse tcp:18081 tcp:18081`, and Android `api_base_url` was
+  temporarily set to `http://127.0.0.1:18081`.
+- Through the proxy, Android refresh received server `401`, cleared the local
+  `token`, cleared paired user fields, switched to `未配对`, and displayed:
+  `手机绑定已失效，请在电脑端重新生成配对码`.
+- A fresh pairing code was generated and entered on Android. The phone stored a
+  new `tbdev_` token, displayed `已永久绑定：汪凯琦，可以刷新任务`, and local
+  `api_base_url` was restored to `https://thebridgesite.tae.vera-mesh.com`.
+- New active phone binding after recovery:
+  `dev_AM--asxD1d7_0P_C`.
+- New device token verification:
+  `GET /api/send-tasks -> 200`, visible task count `31`.
+
+Conclusion: server revocation, Android 401 handling, local binding cleanup, and
+re-pair recovery were verified on a real device. Direct phone access to the test
+API domain remains dependent on the phone network's DNS/routing.
+
 Design doc:
 
 - `/Users/ward/for_claude/the-bridge/docs/SPLIT_DELIVERY_AUTH_DATA_PLAN.md`
