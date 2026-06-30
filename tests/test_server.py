@@ -569,6 +569,56 @@ class ServerTestCase(unittest.TestCase):
         finally:
             self.stop_server(httpd)
 
+    def test_repairing_same_device_replaces_old_active_binding(self):
+        httpd, base = self.run_server(StubAuthClient())
+        try:
+            _, first_pairing = self.post_json(
+                base + "/api/device-pairings",
+                {"device_name": "测试手机"},
+                token="jwt-token",
+            )
+            _, first_exchange = self.post_json(
+                base + "/api/device-pairings/exchange",
+                {
+                    "code": first_pairing["pairing"]["code"],
+                    "device_name": "Android old",
+                    "device_id": "android-device-1",
+                },
+            )
+            old_device_token = first_exchange["device_token"]
+
+            _, second_pairing = self.post_json(
+                base + "/api/device-pairings",
+                {"device_name": "测试手机"},
+                token="jwt-token",
+            )
+            _, second_exchange = self.post_json(
+                base + "/api/device-pairings/exchange",
+                {
+                    "code": second_pairing["pairing"]["code"],
+                    "device_name": "Android new",
+                    "device_id": "android-device-1",
+                },
+            )
+            new_device_token = second_exchange["device_token"]
+
+            status, listed = self.get_json(base + "/api/devices", token="jwt-token")
+            self.assertEqual(status, 200)
+            self.assertEqual(len(listed["devices"]), 1)
+            self.assertEqual(listed["devices"][0]["device_name"], "Android new")
+            self.assertEqual(listed["devices"][0]["device_id"], "android-device-1")
+            self.assertEqual(listed["devices"][0]["revoked_at"], "")
+
+            with self.assertRaises(urllib.error.HTTPError) as cm:
+                self.get_json(base + "/api/send-tasks", token=old_device_token)
+            self.assertEqual(cm.exception.code, 401)
+
+            status, tasks = self.get_json(base + "/api/send-tasks", token=new_device_token)
+            self.assertEqual(status, 200)
+            self.assertIn("tasks", tasks)
+        finally:
+            self.stop_server(httpd)
+
     def test_device_token_cannot_manage_devices_and_revoke_is_idempotent(self):
         httpd, base = self.run_server(StubAuthClient())
         try:

@@ -708,6 +708,17 @@ class Storage:
                 return None
             owner_key = row["owner_key"]
             paired_name = clean_device_name or row["device_name"] or "Android sender"
+            if clean_device_id:
+                conn.execute(
+                    """
+                    update device_tokens
+                    set revoked_at = ?
+                    where owner_key = ?
+                      and device_id = ?
+                      and (revoked_at is null or revoked_at = '')
+                    """,
+                    (now, owner_key, clean_device_id),
+                )
             conn.execute(
                 """
                 update device_pairing_codes
@@ -739,7 +750,7 @@ class Storage:
                 """
                 select token_hash, id, device_name, device_id, created_at, last_seen_at, revoked_at
                 from device_tokens
-                where owner_key = ?
+                where owner_key = ? and (revoked_at is null or revoked_at = '')
                 order by created_at desc
                 """,
                 (owner_key,),
