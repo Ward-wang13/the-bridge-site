@@ -370,6 +370,24 @@ Conclusion: server revocation, Android 401 handling, local binding cleanup, and
 re-pair recovery were verified on a real device. Direct phone access to the test
 API domain remains dependent on the phone network's DNS/routing.
 
+Network finding on 2026-06-30:
+
+- On the Mac, `thebridgesite.tae.vera-mesh.com` resolves to `198.18.0.55`, and
+  `thebridge.tae.vera-mesh.com` resolves to `198.18.0.56`.
+- The Mac reaches these addresses through local proxy/VPN routing on `utun9`
+  (`198.18.0.1`), not through an ordinary public route.
+- The Android phone used for smoke was on cellular data, `wlan0` was down, and
+  no global HTTP proxy/private DNS/VPN was configured.
+- Therefore direct phone HTTPS requests to the TAE test API timed out, while
+  the same API was reachable from Android through `adb reverse` to the Mac.
+
+Implication: this is not an Android sender code regression. Before production
+mobile use, choose a network strategy:
+
+- developer smoke via `adb reverse`;
+- phone joins a Wi-Fi/proxy/VPN/Vera Mesh path that can route TAE domains; or
+- expose the mobile API through a phone-reachable public ingress.
+
 Design doc:
 
 - `/Users/ward/for_claude/the-bridge/docs/SPLIT_DELIVERY_AUTH_DATA_PLAN.md`
